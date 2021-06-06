@@ -10,7 +10,7 @@ port_dropbear=`ps aux | grep dropbear | awk NR==1 | awk '{print $15;}'`
 # cat /var/log/auth.log|tail -1000 > /var/log/authday.log
 cat /var/log/messages|tail -1000 > /var/log/auth.log
 #  grep "Password auth succeeded" /var/log/auth.log
-log=/var/log/messages
+log=/var/log/auth.log
 loginsukses='Password auth succeeded'
 clear
 pids=`ps ax |grep dropbear |grep  " $port_dropbear" |awk -F" " '{print $1}'`
