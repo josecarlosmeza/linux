@@ -5,7 +5,7 @@ import socket, threading, select, signal, sys, time, getopt
 # =================================================================
 
 # Listen
-LISTENING_ADDR = '127.0.0.1'
+LISTENING_ADDR = '0.0.0.0'
 # Si no se pasan argumentos, usa 700. La lógica de args se moverá al final.
 if len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
     LISTENING_PORT = sys.argv[1]
