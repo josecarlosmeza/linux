@@ -1,18 +1,16 @@
 #!/bin/bash
+# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL
 
 # --- CONFIGURACIÓN Y CHEQUEO INICIAL ---
-# Se lee la IP del sistema.
 IP=$(cat /etc/IP)
-# Se define el directorio de scripts de prueba.
 TEST_DIR="/etc/SSHPlus/userteste"
 DB_FILE="/root/usuarios.db"
 PASS_DIR="/etc/SSHPlus/senha"
 
-# Crear directorios necesarios de forma segura.
+# Crear directorios necesarios
 mkdir -p "$TEST_DIR" "$PASS_DIR"
 
 # --- FUNCIÓN DE SALIDA DE ERROR ---
-# Centraliza la visualización de mensajes de error.
 error_exit() {
     echo ""
     tput setaf 7 ; tput setab 1 ; tput bold
@@ -27,87 +25,91 @@ tput setaf 7 ; tput setab 4 ; tput bold
 printf '%30s%s%-15s\n' "Criar usuario teste"
 tput sgr0
 echo ""
-# Comprueba si hay archivos .sh en el directorio de pruebas
+
+# Comprueba si hay scripts de eliminación activos
 if [ "$(find "$TEST_DIR" -maxdepth 1 -name "*.sh" -print -quit)" ]; then
     echo -e "\033[1;32mTeste Ativo!\033[1;37m"
 else
     echo -e "\033[1;31mNenhum test ativo!\033[0m"
 fi
 echo ""
-# Lista usuarios activos de prueba
+
+# Lista usuarios de prueba activos
 echo "Usuários de Teste Ativos:"
-for testeson in $(ls "$TEST_DIR" | sort | sed 's/.sh$//g'); do
+for testeson in $(ls "$TEST_DIR" | sort | sed 's/\.sh$//g'); do
     echo "$testeson"
 done
 echo ""
 
 # --- ENTRADA DE DATOS Y VALIDACIÓN OPTIMIZADA ---
+
 # 1. Nombre de Usuario
 echo -ne "\033[1;32mNome do usuario\033[1;37m: " ; read nome
-if [[ -z "$nome" ]]; then
-    error_exit "Nome vazio ou invalido."
-fi
-# Comprobar si el usuario existe usando 'id -u' (más eficiente que awk + grep)
+[[ -z "$nome" ]] && error_exit "Nome vazio ou invalido."
+
+# Comprobar si el usuario existe usando 'id -u' (estándar en AlmaLinux)
 if id -u "$nome" &>/dev/null; then
     error_exit "Este usuário já existe."
 fi
 
 # 2. Contraseña
 echo -ne "\033[1;32mSenha\033[1;37m: " ; read pass
-if [[ -z "$pass" ]]; then
-    error_exit "Senha vazia ou invalida."
-fi
+[[ -z "$pass" ]] && error_exit "Senha vazia ou invalida."
 
-# 3. Límite (Debe ser un número)
+# 3. Límite (Validación numérica)
 echo -ne "\033[1;32mLimite\033[1;37m: " ; read limit
-# Validación de que sea un número entero positivo
 if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
     error_exit "Limite invalido. Deve ser um número inteiro positivo."
 fi
 
-# 4. Tiempo de Validez (Minutos, debe ser un número)
+# 4. Tiempo de Validez (Minutos, Validación numérica)
 echo -ne "\033[1;32mMinutos \033[1;33m(\033[1;31mEx: \033[1;37m60\033[1;33m)\033[1;37m: " ; read u_temp
-# Se corrige el error de validación y se añade comprobación numérica
 if ! [[ "$u_temp" =~ ^[1-9][0-9]*$ ]]; then
     error_exit "Tempo de validade invalido. Deve ser um número inteiro positivo."
 fi
 
 # --- CREACIÓN Y CONFIGURACIÓN DEL USUARIO ---
-# Uso de /sbin/nologin (más semántico) y comprobación de éxito
+# Uso de /sbin/nologin (estándar en AlmaLinux/RHEL para denegar shell)
 if ! useradd -M -s /sbin/nologin "$nome"; then
     error_exit "Falha ao criar o usuário no sistema."
 fi
-# Establecer contraseña de forma segura
+
+# Establecer contraseña usando chpasswd (más directo y seguro que 'echo | passwd')
 echo "$nome:$pass" | chpasswd
 
-# Guardar datos
+# Guardar datos en las bases de datos del script
 echo "$pass" > "$PASS_DIR/$nome"
 echo "$nome $limit" >> "$DB_FILE"
 
 # --- CREACIÓN Y PROGRAMACIÓN DEL SCRIPT DE ELIMINACIÓN (AT) ---
-
 DELETE_SCRIPT="$TEST_DIR/$nome.sh"
 
-# Contenido del script de eliminación
 cat << EOF > "$DELETE_SCRIPT"
 #!/bin/bash
 # Script de auto-destruição para o usuário teste '$nome'
-# Desconecta e remove o usuário após o tempo de validade.
 
-pkill -u "$nome" # Pkill por UID é mais seguro que pkill -f
+# 1. Matar todas las sesiones activas del usuario (pkill -u es más seguro)
+pkill -u "$nome"
+
+# 2. Eliminar el usuario del sistema
 userdel --force "$nome"
-# REMOÇÃO ROBUSTA: Usa sed para remover a linha no DB sem temp files
+
+# 3. Eliminar la entrada del usuario de la base de datos de límites (con sed)
 sed -i.bak '/^'"$nome"'[[:space:]]/d' "$DB_FILE" > /dev/null 2>&1
+
+# 4. Eliminar el archivo de contraseña y el script de auto-eliminación
 rm -f "$PASS_DIR/$nome" "$DELETE_SCRIPT" > /dev/null 2>&1
+
 exit
 EOF
 
-# Asignar permisos solo de ejecución para root (mejor seguridad)
+# Asignar permisos y programar con 'at'
 chmod 700 "$DELETE_SCRIPT"
-
-# Programar la tarea de eliminación (se verifica el éxito)
 at_output=$(at -f "$DELETE_SCRIPT" "now + $u_temp min" 2>&1)
+
+# Verificación de que 'at' se programó correctamente
 if [[ $? -ne 0 ]]; then
+    # Si falla, se muestra el error de 'at' y se sale.
     error_exit "Falha ao programar a eliminação automática (at). Erro: $at_output"
 fi
 
