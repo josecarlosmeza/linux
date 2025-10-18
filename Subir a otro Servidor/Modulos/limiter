@@ -61,7 +61,7 @@ fun_multilogin_optimized() {
                     (
                         telnet localhost 7505 <<-EOF
                             kill "$ovpids"
-                        EOF
+EOF
                     ) &>/dev/null & # Se mantiene en background para no bloquear el bucle
                 done <<<"$listpid"
                 echo "OVPN - Usuario $user ($ovp/$limit) excedido. $pidokill sesiones eliminadas."
