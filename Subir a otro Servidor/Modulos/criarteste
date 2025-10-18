@@ -115,14 +115,14 @@ fi
 
 # --- SALIDA FINAL ---
 clear
-echo -e "\E[44;1;37m     Usuario Teste Criado     \E[0m"
+echo -e "\E[44;1;37m     Usuario de prueba creado   \E[0m"
 echo ""
 echo -e "\033[1;32mIP:\033[1;37m $IP"
 echo -e "\033[1;32mUsuario:\033[1;37m $nome"
-echo -e "\033[1;32mSenha:\033[1;37m $pass"
+echo -e "\033[1;32mContraseña:\033[1;37m $pass"
 echo -e "\033[1;32mLimite:\033[1;37m $limit"
-echo -e "\033[1;32mValidade:\033[1;37m $u_temp Minutos"
+echo -e "\033[1;32mValido:\033[1;37m $u_temp Minutos"
 echo ""
-echo -e "\033[1;33mApos o tempo definido o usuario"
-echo -e "\033[1;32m$nome \033[1;33msera desconectado e deletado.\033[0m"
+echo -e "\033[1;33mTranscurrido el tiempo definido del usuario"
+echo -e "\033[1;32m$nome \033[1;33msera desconectado y borrado.\033[0m"
 exit
