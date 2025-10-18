@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL
+# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL[revisar los servicios atd para que funcione bien]
 
 # --- CONFIGURACIÓN Y CHEQUEO INICIAL ---
 IP=$(cat /etc/IP)
@@ -22,20 +22,20 @@ error_exit() {
 # --- VISUALIZACIÓN DE ESTADO ---
 clear
 tput setaf 7 ; tput setab 4 ; tput bold
-printf '%30s%s%-15s\n' "Criar usuario teste"
+printf '%30s%s%-15s\n' "Crear usuario de prueba"
 tput sgr0
 echo ""
 
 # Comprueba si hay scripts de eliminación activos
 if [ "$(find "$TEST_DIR" -maxdepth 1 -name "*.sh" -print -quit)" ]; then
-    echo -e "\033[1;32mTeste Ativo!\033[1;37m"
+    echo -e "\033[1;32m¡Usuario de prueba ACTIVO!\033[1;37m"
 else
     echo -e "\033[1;31mNenhum test ativo!\033[0m"
 fi
 echo ""
 
 # Lista usuarios de prueba activos
-echo "Usuários de Teste Ativos:"
+echo "Usuarios de prueba Activos:"
 for testeson in $(ls "$TEST_DIR" | sort | sed 's/\.sh$//g'); do
     echo "$testeson"
 done
@@ -44,34 +44,34 @@ echo ""
 # --- ENTRADA DE DATOS Y VALIDACIÓN OPTIMIZADA ---
 
 # 1. Nombre de Usuario
-echo -ne "\033[1;32mNome do usuario\033[1;37m: " ; read nome
-[[ -z "$nome" ]] && error_exit "Nome vazio ou invalido."
+echo -ne "\033[1;32mNombre del Usuario\033[1;37m: " ; read nome
+[[ -z "$nome" ]] && error_exit "Nombre vacío o invalido."
 
 # Comprobar si el usuario existe usando 'id -u' (estándar en AlmaLinux)
 if id -u "$nome" &>/dev/null; then
-    error_exit "Este usuário já existe."
+    error_exit "Este usuário ya existe."
 fi
 
 # 2. Contraseña
 echo -ne "\033[1;32mSenha\033[1;37m: " ; read pass
-[[ -z "$pass" ]] && error_exit "Senha vazia ou invalida."
+[[ -z "$pass" ]] && error_exit "Contraseña vacía o invalida."
 
 # 3. Límite (Validación numérica)
 echo -ne "\033[1;32mLimite\033[1;37m: " ; read limit
 if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
-    error_exit "Limite invalido. Deve ser um número inteiro positivo."
+    error_exit "Limite invalido. Debe ser um número entero positivo."
 fi
 
 # 4. Tiempo de Validez (Minutos, Validación numérica)
 echo -ne "\033[1;32mMinutos \033[1;33m(\033[1;31mEx: \033[1;37m60\033[1;33m)\033[1;37m: " ; read u_temp
 if ! [[ "$u_temp" =~ ^[1-9][0-9]*$ ]]; then
-    error_exit "Tempo de validade invalido. Deve ser um número inteiro positivo."
+    error_exit "Tiempo de validez invalido. Debe ser um número intero positivo."
 fi
 
 # --- CREACIÓN Y CONFIGURACIÓN DEL USUARIO ---
 # Uso de /sbin/nologin (estándar en AlmaLinux/RHEL para denegar shell)
 if ! useradd -M -s /sbin/nologin "$nome"; then
-    error_exit "Falha ao criar o usuário no sistema."
+    error_exit "Falla al crear usuario en el sistema."
 fi
 
 # Establecer contraseña usando chpasswd (más directo y seguro que 'echo | passwd')
