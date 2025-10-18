@@ -1,0 +1,30 @@
+#!/bin/bash
+# Proxy For Edukasi & Imclass
+
+
+wget -O /usr/local/bin/ws-stunnel https://raw.githubusercontent.com/josecarlosmeza/linux/refs/heads/main/Subir%20a%20otro%20Servidor/wspy3
+chmod +x /usr/local/bin/wspy3
+
+# Installing Service
+cat > /etc/systemd/system/ws-stunnel.service << END
+[Unit]
+Description=Python Proxy Mod By SFVPN
+Documentation=https://t.me/abecasdee13
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/bin/python -O /usr/local/bin/wspy3
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+END
+
+systemctl enable ws-stunnel.service
+systemctl start ws-stunnel.service
+systemctl restart ws-stunnel.service
