@@ -10,7 +10,7 @@ LISTENING_ADDR = '127.0.0.1'
 if len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
     LISTENING_PORT = sys.argv[1]
 else:
-    LISTENING_PORT = 700 # 
+    LISTENING_PORT = 80 # 
 
 # Contraseña (se mantiene como cadena)
 PASS = ''
