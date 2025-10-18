@@ -123,6 +123,8 @@ echo -e "\033[1;32mContraseña:\033[1;37m $pass"
 echo -e "\033[1;32mLimite:\033[1;37m $limit"
 echo -e "\033[1;32mValido:\033[1;37m $u_temp Minutos"
 echo ""
+echo -e "\033[1;37m $nome:\033[1;37m $pass"
+echo ""
 echo -e "\033[1;33mTranscurrido el tiempo definido del usuario"
 echo -e "\033[1;32m$nome \033[1;33msera desconectado y borrado.\033[0m"
 exit
