@@ -62,7 +62,7 @@ fun_drop () {
 }
 # --- FIN FUNCIÓN DROPBEAR ---
 
-echo -e "\E[44;1;37m Usuario         Status       Conexão     Tiempo   \E[0m"
+echo -e "\E[44;1;37m Usuario         Estado       Conexión    Tiempo   \E[0m"
 echo ""
 echo ""
 
