@@ -1,14 +1,14 @@
 #!/bin/bash
-# Proxy For Edukasi & Imclass
+# Proxy Modificado y optimizado por RedLibre 
 
 
-wget -O /usr/local/bin/wspy3 https://raw.githubusercontent.com/josecarlosmeza/linux/refs/heads/main/Subir%20a%20otro%20Servidor/wspy3
+wget -O /usr/local/bin/wspy3 https://raw.githubusercontent.com/josecarlosmeza/linux/refs/heads/main/Subir%20a%20otro%20Servidor/wspy3-opt
 chmod +x /usr/local/bin/wspy3
 
 # Installing Service
 cat > /etc/systemd/system/wspy3.service << END
 [Unit]
-Description=Python Proxy Mod By redlibre
+Description=Python Proxy Modificado por RedLibre 
 Documentation=3794776469
 After=network.target nss-lookup.target
 
