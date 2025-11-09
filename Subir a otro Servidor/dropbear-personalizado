@@ -1,0 +1,120 @@
+#!/bin/bash
+
+# =======================================================
+#               CONFIGURACIÓN DEL SCRIPT
+# =======================================================
+
+# 1. Versión real de Dropbear a descargar
+DROPBEAR_VERSION="2022.83" 
+
+# 2. NUEVA cadena de versión que se mostrará al cliente
+# (Debe comenzar con 'dropbear_' para mantener compatibilidad)
+NUEVA_VERSION_STRING="dropbear_MiServidorPrivado" 
+
+# 3. Puerto en el que Dropbear escuchará
+DROPBEAR_PORT="2222" 
+
+# 4. Directorio de instalación
+PREFIX="/usr/local" 
+
+# 5. Nombre del archivo de código fuente de Dropbear
+TAR_FILE="dropbear-${DROPBEAR_VERSION}.tar.bz2"
+SRC_DIR="dropbear-${DROPBEAR_VERSION}"
+VERSION_FILE="version.h"
+
+# =======================================================
+#               VALIDACIONES Y PREPARACIÓN
+# =======================================================
+
+echo "--- 🛠️ Iniciando Instalación Personalizada de Dropbear v${DROPBEAR_VERSION} ---"
+
+# 1. Instalar dependencias de compilación
+echo "1. Instalando dependencias de compilación (gcc, make, zlib-devel)..."
+sudo dnf install -y gcc make zlib-devel wget || { echo "Error instalando dependencias. Saliendo."; exit 1; }
+
+# 2. Descargar y descomprimir el código fuente
+echo "2. Descargando y extrayendo ${TAR_FILE}..."
+wget https://matt.ucc.asn.au/dropbear/releases/${TAR_FILE}
+tar -xf ${TAR_FILE}
+cd ${SRC_DIR} || { echo "Error al entrar al directorio fuente. Saliendo."; exit 1; }
+
+# =======================================================
+#               MODIFICACIÓN DEL CÓDIGO FUENTE
+# =======================================================
+
+echo "3. Modificando el archivo ${VERSION_FILE} para ofuscar la versión..."
+# Definición y escape de la versión original
+OLD_VERSION_STRING="dropbear_${DROPBEAR_VERSION}"
+# Escapar los puntos para que 'sed' los interprete como literales
+ESCAPED_OLD_VERSION=$(echo "${OLD_VERSION_STRING}" | sed 's/\./\\./g')
+
+# Reemplazar la cadena de la versión en version.h
+sed -i "s|#define DROPBEAR_VERSION \"${ESCAPED_OLD_VERSION}\"|#define DROPBEAR_VERSION \"${NUEVA_VERSION_STRING}\"|g" ${VERSION_FILE}
+
+# Verificar el cambio
+echo "   -> La versión del banner se ha cambiado a: ${NUEVA_VERSION_STRING}"
+grep "DROPBEAR_VERSION" ${VERSION_FILE}
+echo "-----------------------------------"
+
+# =======================================================
+#                  COMPILACIÓN E INSTALACIÓN
+# =======================================================
+
+echo "4. Configurando, compilando e instalando Dropbear en ${PREFIX}..."
+./configure --prefix=${PREFIX} --enable-zlib || { echo "Error en ./configure. Saliendo."; exit 1; }
+make || { echo "Error en make. Saliendo."; exit 1; }
+sudo make install || { echo "Error en make install. Saliendo."; exit 1; }
+
+# 5. Generar las claves del host
+echo "5. Generando claves del host (RSA, DSS, ED25519)..."
+sudo mkdir -p ${PREFIX}/etc
+sudo ${PREFIX}/bin/dropbearkey -t rsa -f ${PREFIX}/etc/dropbear_rsa_host_key
+sudo ${PREFIX}/bin/dropbearkey -t dss -f ${PREFIX}/etc/dropbear_dss_host_key
+sudo ${PREFIX}/bin/dropbearkey -t ed25519 -f ${PREFIX}/etc/dropbear_ed25519_host_key
+
+# 6. Limpieza (opcional)
+cd ..
+rm -rf ${SRC_DIR} ${TAR_FILE}
+echo "   -> Directorios temporales y archivo .tar eliminados."
+
+# =======================================================
+#               CONFIGURACIÓN DEL SERVICIO (SYSTEMD)
+# =======================================================
+
+# 7. Crear el archivo de servicio systemd
+echo "7. Creando archivo de servicio systemd en /etc/systemd/system/dropbear.service..."
+SYSTEMD_SERVICE_FILE="/etc/systemd/system/dropbear.service"
+
+sudo tee ${SYSTEMD_SERVICE_FILE} > /dev/null <<EOL
+[Unit]
+Description=Dropbear SSH Server (Custom Build)
+After=network.target
+
+[Service]
+Type=simple
+# Ejecutar Dropbear en el puerto configurado (-p) y mantenerlo en primer plano (-F)
+ExecStart=${PREFIX}/sbin/dropbear -F -p ${DROPBEAR_PORT}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+# 8. Recargar, habilitar e iniciar el servicio
+echo "8. Recargando, habilitando e iniciando el servicio Dropbear..."
+sudo systemctl daemon-reload
+sudo systemctl enable dropbear
+sudo systemctl start dropbear
+
+# 9. Configurar Firewalld
+echo "9. Configurando Firewalld para permitir el puerto ${DROPBEAR_PORT}..."
+sudo firewall-cmd --add-port=${DROPBEAR_PORT}/tcp --permanent
+sudo firewall-cmd --reload
+
+echo "======================================================="
+echo "✅ Instalación de Dropbear Personalizado COMPLETADA."
+echo "   - Servidor iniciado en el puerto: ${DROPBEAR_PORT}"
+echo "   - Estado del servicio: $(sudo systemctl is-active dropbear)"
+echo "   - Pruébelo con: ssh -p ${DROPBEAR_PORT} user@su_ip"
+echo "===============================
+========================"
