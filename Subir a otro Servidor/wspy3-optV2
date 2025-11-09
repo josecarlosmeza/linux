@@ -12,17 +12,16 @@ import signal
 # Listen
 LISTENING_ADDR = '0.0.0.0'
 LISTENING_PORT = 80 # Puerto por defecto, se ajusta con argumentos.
-[span_0](start_span)PASS = '' # Contraseña (se mantiene como cadena)[span_0](end_span)
+PASS = '' # Contraseña (se mantiene como cadena)
 
 # CONSTANTES
-[span_1](start_span)BUFLEN = 4096 * 2 # Reducción a 8KB (antes 16KB) para menor consumo de memoria.[span_1](end_span)
-# ✨ MEJORA: Reducido de 60s a 45s para liberar recursos más rápido de conexiones inactivas.
-[span_2](start_span)TIMEOUT = 45 # Timeout de inactividad (antes 60s)[span_2](end_span)
+BUFLEN = 4096 * 2 # Reducción a 8KB (antes 16KB) para menor consumo de memoria.
+TIMEOUT = 45 # Timeout de inactividad (reducido de 60s a 45s)
 DEFAULT_HOST = '127.0.0.1:22'
 
 # RESPUESTA HTTP (se codifica a bytes)
 # Nota: Se ha omitido el formato HTML en la respuesta por defecto por limpieza, pero mantiene el contacto.
-[span_3](start_span)RESPONSE_STR = 'HTTP/1.1 101 Contacto: 3794776469\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: foo\r\n\r\n'[span_3](end_span)
+RESPONSE_STR = 'HTTP/1.1 101 Contacto: 3794776469\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: foo\r\n\r\n'
 RESPONSE = RESPONSE_STR.encode('latin-1')
 
 # =================================================================
@@ -42,7 +41,7 @@ def find_header(head: bytes, header: bytes) -> bytes:
     head = head[aux + 2:]
     aux = head.find(b'\r\n')
     if aux == -1:
-        [span_4](start_span)return b''[span_4](end_span)
+        return b''
     return head[:aux]
 
 async def forward_data(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, log_prefix: str):
@@ -52,14 +51,14 @@ async def forward_data(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
             # Lee un chunk de datos con timeout
             data = await asyncio.wait_for(reader.read(BUFLEN), timeout=TIMEOUT)
             if not data:
-                [span_5](start_span)break # Conexión cerrada[span_5](end_span)
+                break # Conexión cerrada
             
             # Escribe los datos al otro extremo
             writer.write(data)
             await writer.drain() # Asegura que los datos se envíen
     except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, ConnectionAbortedError) as e:
         # Se registran los errores de la tubería
-        [span_6](start_span)print_log(f"{log_prefix} - Forwarding Error: {type(e).__name__}")[span_6](end_span)
+        print_log(f"{log_prefix} - Forwarding Error: {type(e).__name__}")
     finally:
         writer.close()
         # Intentar esperar el cierre limpio
@@ -74,7 +73,7 @@ async def forward_data(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
 
 async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
     addr = client_writer.get_extra_info('peername')
-    [span_7](start_span)log = f'Connection: {addr}'[span_7](end_span)
+    log = f'Connection: {addr}'
     
     target_reader = None
     target_writer = None
@@ -87,7 +86,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         host_port_bytes = find_header(client_buffer, b'X-Real-Host')
         
         # MODIFICACIÓN: Si NO se encuentra X-Real-Host, usamos el DEFAULT_HOST sin error 400.
-        [span_8](start_span)if host_port_bytes == b'':[span_8](end_span)
+        if host_port_bytes == b'':
             host_port_bytes = DEFAULT_HOST.encode('latin-1')
             
         host_port = host_port_bytes.decode('latin-1')
@@ -95,14 +94,14 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         # Validación de contraseña
         passwd_bytes = find_header(client_buffer, b'X-Pass')
         
-        [span_9](start_span)if len(PASS) != 0 and passwd_bytes != PASS.encode('latin-1'):[span_9](end_span)
+        if len(PASS) != 0 and passwd_bytes != PASS.encode('latin-1'):
             client_writer.write(b'HTTP/1.1 400 WrongPass!\r\n\r\n')
             await client_writer.drain()
             return
         
         # Validación de host (si NO hay contraseña, solo permite 127.0.0.1/localhost)
         if len(PASS) == 0:
-            [span_10](start_span)if not host_port_bytes.startswith(b'127.0.0.1') and not host_port_bytes.startswith(b'localhost'):[span_10](end_span)
+            if not host_port_bytes.startswith(b'127.0.0.1') and not host_port_bytes.startswith(b'localhost'):
                 client_writer.write(b'HTTP/1.1 403 Forbidden!\r\n\r\n')
                 await client_writer.drain()
                 return
@@ -111,7 +110,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         log += ' - CONNECT ' + host_port
         
         host_parts = host_port.split(':')
-        [span_11](start_span)host = host_parts[0][span_11](end_span)
+        host = host_parts[0]
         # Si no se especifica puerto, por defecto es 22 (túnel SSH)
         port = int(host_parts[1]) if len(host_parts) > 1 else 22 
         
@@ -128,7 +127,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         
         # 4. Enviar respuesta '101 Switching Protocols' al cliente
         client_writer.write(RESPONSE)
-        [span_12](start_span)await client_writer.drain()[span_12](end_span)
+        await client_writer.drain()
         
         print_log(log)
         
@@ -137,7 +136,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         client_to_target = forward_data(client_reader, target_writer, log + " (C->T)")
         target_to_client = forward_data(target_reader, client_writer, log + " (T->C)")
        
-        # [span_13](start_span)Esperar a que ambas transferencias terminen[span_13](end_span)
+        # Esperar a que ambas transferencias terminen
         await asyncio.gather(client_to_target, target_to_client)
         
     except (asyncio.TimeoutError, ConnectionRefusedError, socket.gaierror) as e:
@@ -146,7 +145,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         pass
     finally:
         # Asegurar el cierre de ambos lados
-        [span_14](start_span)if target_writer:[span_14](end_span)
+        if target_writer:
             target_writer.close()
             try: await target_writer.wait_closed()
             except: pass
@@ -164,7 +163,7 @@ def parse_args(argv):
     global LISTENING_PORT
   
     
-    [span_15](start_span)try:[span_15](end_span)
+    try:
         opts, args = getopt.getopt(argv, "hb:p:", ["bind=", "port="])
     except getopt.GetoptError:
         print('Usage: proxy.py -b <bindAddr> -p <port>')
@@ -173,14 +172,14 @@ def parse_args(argv):
     for opt, arg in opts:
         if opt == '-h':
             print('Usage: proxy.py -b <bindAddr> -p <port>')
-            [span_16](start_span)sys.exit()[span_16](end_span)
+            sys.exit()
         elif opt in ("-b", "--bind"):
             LISTENING_ADDR = arg
         elif opt in ("-p", "--port"):
             try:
                 LISTENING_PORT = int(arg)
             except ValueError:
-                [span_17](start_span)print("Error: Port must be an integer.")[span_17](end_span)
+                print("Error: Port must be an integer.")
                 sys.exit(2)
 
 async def main_async():
@@ -195,7 +194,7 @@ async def main_async():
         handle_client, LISTENING_ADDR, LISTENING_PORT
     )
     
-    [span_18](start_span)addrs = ', '.join(str(sock.getsockname()) for sock in server.sockets)[span_18](end_span)
+    addrs = ', '.join(str(sock.getsockname()) for sock in server.sockets)
     print(f'Serving on {addrs}')
 
     async with server:
@@ -215,7 +214,7 @@ if __name__ == '__main__':
     # Manejo de señal para detener el servidor con Ctrl+C
     try:
         loop.add_signal_handler(signal.SIGINT, stop_server, loop)
-    [span_19](start_span)except NotImplementedError:[span_19](end_span)
+    except NotImplementedError:
         pass
         
     try:
@@ -227,7 +226,7 @@ if __name__ == '__main__':
     finally:
         # Cierre limpio de todas las tareas
         print("Closing server...")
-        [span_20](start_span)pending = asyncio.all_tasks(loop)[span_20](end_span)
+        pending = asyncio.all_tasks(loop)
         for task in pending:
             task.cancel()
         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
