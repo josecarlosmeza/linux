@@ -9,7 +9,7 @@ DROPBEAR_VERSION="2022.83"
 
 # 2. NUEVA cadena de versión que se mostrará al cliente
 # (Debe comenzar con 'dropbear_' para mantener compatibilidad)
-NUEVA_VERSION_STRING="dropbear_MiServidorPrivado" 
+NUEVA_VERSION_STRING="dropbear_REDLIBRE-3794776469" 
 
 # 3. Puerto en el que Dropbear escuchará
 DROPBEAR_PORT="2222" 
