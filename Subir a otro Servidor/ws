@@ -2,7 +2,7 @@
 # Proxy Modificado y optimizado por RedLibre 
 
 
-wget -O /usr/local/bin/wspy3 https://raw.githubusercontent.com/josecarlosmeza/linux/refs/heads/main/Subir%20a%20otro%20Servidor/wspy3-opt
+wget -O /usr/local/bin/wspy3 https://raw.githubusercontent.com/josecarlosmeza/linux/refs/heads/main/Subir%20a%20otro%20Servidor/wspy3-optV2
 chmod +x /usr/local/bin/wspy3
 
 # Installing Service
