@@ -3,168 +3,156 @@ clear
 
 # --- CONFIGURACIÓN DE ARCHIVOS ---
 database="/root/usuarios.db"
-LOG_FILE="/var/log/secure" # En AlmaLinux/RHEL, 'secure' es el archivo de log principal para autenticación.
-# En algunos sistemas puede seguir siendo /var/log/auth.log o /var/log/messages
+# Usamos el log de autenticación estándar para ambos servicios.
+if [ -f /var/log/secure ]; then
+    AUTH_LOG_FILE="/var/log/secure"
+elif [ -f /var/log/auth.log ]; then
+    AUTH_LOG_FILE="/var/log/auth.log"
+else
+    AUTH_LOG_FILE="/var/log/messages"
+fi
+# --- FIN CONFIGURACIÓN ---
 
-# Verificación de la licencia (ruta original, mantengo por compatibilidad con el código anterior)
+# --- FUNCIONES AUXILIARES (Mantenidas) ---
+calculate_session_time_bc() {
+    # [Función de cálculo de tiempo omitida por brevedad, no requiere cambios]
+    local tmp1=$1; local tmp2=$(date +%H:%M:%S 2>/dev/null)
+    if [[ -z "$tmp1" ]] || [[ -z "$tmp2" ]]; then echo "??:??:??"; return; fi
+    var1=`echo $tmp1 | cut -c 1-2`; var2=`echo $tmp1 | cut -c 4-5`; var3=`echo $tmp1 | cut -c 7-8`
+    var4=`echo $tmp2 | cut -c 1-2`; var5=`echo $tmp2 | cut -c 4-5`; var6=`echo $tmp2 | cut -c 7-8`
+    calc1=`echo "$var1*3600 + $var2*60 + $var3" | bc 2>/dev/null`; calc2=`echo "$var4*3600 + $var5*60 + $var6" | bc 2>/dev/null`
+    if [[ -z "$calc1" ]] || [[ -z "$calc2" ]]; then echo "??:??:??"
+    return; fi
+    seg=$(($calc2 - calc1)); if [ $seg -lt 0 ]; then seg=$((seg + 86400)); fi
+    min=$(($seg/60)); seg=$(($seg-$min*60)); hor=$(($min/60)); min=$(($min-$hor*60))
+    timerusr=`printf "%02d:%02d:%02d" $hor $min $seg;`; echo "$timerusr"
+}
+
+get_ssh_log_time() {
+    # [Función de tiempo omitida por brevedad, no requiere cambios]
+    local user=$1; local log=$AUTH_LOG_FILE; 
+    local LOG_ENTRY=$(grep -E 'Accepted|session opened|login|auth succeeded' "$log" | grep -w "$user" | tail -1) 
+    if [ -z "$LOG_ENTRY" ]; then echo ""; return; fi
+    tmp1=$(echo "$LOG_ENTRY" | awk '{print $3}' | tr -d '[:space:]'); echo "$tmp1"
+}
+
+# --- NUEVA FUNCIÓN AUXILIAR PARA EXTRAER PIDs DE AMBOS SERVICIOS ---
+extract_pids_from_log() {
+    local log_lines="$1"
+    local pids=""
+
+    # 1. Extraer PIDs para DROPBEAR (formato: dropbear[PID]: ...)
+    pids+=$(echo "$log_lines" | grep "dropbear" | sed -E 's/.*dropbear\[([0-9]+)\].*/\1/')
+
+    # 2. Extraer PIDs para SSHD (formato: sshd[PID]: ...)
+    # Añadimos un espacio para separar los PIDs si hay ambos servicios.
+    pids+=" "
+    pids+=$(echo "$log_lines" | grep "sshd" | sed -E 's/.*sshd\[([0-9]+)\].*/\1/')
+
+    # 3. Limpiar y devolver PIDs únicos
+    echo "$pids" | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+
+# --- FUNCIÓN CENTRAL: CONTEO PRECISO (Dropbear + sshd) ---
+get_active_session_count() {
+    local target_user=$1
+    local log=$AUTH_LOG_FILE
+
+    local active_count=0
+    local oldest_pid=""
+
+    # 1. Filtrar el log para TODAS las líneas de éxito de SSH/Dropbear para el usuario
+    # Buscamos 'Accepted' (sshd) o 'auth succeeded' (dropbear)
+    SUCCESS_LINES=$(grep -E 'Accepted password|Password auth succeeded|session opened' "$log" | grep -w "$target_user")
+
+    if [[ -n "$SUCCESS_LINES" ]]; then
+        
+        # 2. Extraer todos los PIDs únicos del log (usando la nueva función auxiliar)
+        REGISTERED_PIDS=$(extract_pids_from_log "$SUCCESS_LINES")
+
+        # 3. Verificar cuáles de esos PIDs están activos
+        for pid in $REGISTERED_PIDS; do
+            # Verificamos si el PID existe y no es un zombie
+            if ps -p "$pid" > /dev/null 2>&1; then
+                active_count=$((active_count + 1))
+                
+                # 4. Identificar el PID activo más antiguo
+                if [[ -z "$oldest_pid" ]] || [[ "$pid" -lt "$oldest_pid" ]]; then
+                    oldest_pid="$pid"
+                fi
+            fi
+        done
+    fi
+
+    echo "$active_count $oldest_pid" 
+}
+
+# --- INICIO DEL PROGRAMA PRINCIPAL ---
 if [[ -e /usr/lib/licence ]]; then
 
-# Variable temporal para cálculos de tiempo (no siempre necesaria, pero mantenida)
-tmp_now=$(printf '%(%H%M%S)T\n')
-
-# --- FUNCIÓN PARA DROPBEAR (Requiere un formato de log estable) ---
-fun_drop () {
-    # 1. Obtener el PID principal del servidor dropbear (para el puerto, si fuera necesario)
-    # port_dropbear=`ss -lntp | grep dropbear | awk '{print $4}' | cut -d: -f2 | head -1`
-
-    # 2. Obtener PIDs de procesos dropbear (las sesiones activas)
-    # Se usa awk para imprimir el PID (columna 2) solo si el comando contiene 'dropbear' y no es el grep
-    DROPBEAR_PIDS=$(ps aux | awk '/dropbear/ && !/awk/ && !/grep/ {print $2}')
-    
-    log=$LOG_FILE
-    loginsukses='Password auth succeeded'
-    
-    echo "Dropbear Sessions:"
-    
-    # Iterar sobre las sesiones activas
-    for pid in $DROPBEAR_PIDS
-    do
-        # Intenta encontrar el usuario asociado al PID en el log
-        # Nota: La estructura del log varía. Esta es una suposición basada en el código original.
-        # Buscamos la línea de éxito para el PID
-        login=`grep "$pid" $log | grep "$loginsukses" | tail -1`
-
-        if [ -n "$login" ];then
-           PID=$pid
-           # Ajustar el campo de AWK basado en el formato de /var/log/secure o /var/log/auth.log
-           # En muchas distribuciones, el usuario es el último campo después de 'for USER from IP...'
-           user=`echo "$login" | grep -oP '(?<=for ).*(?= from)' | awk '{print $1}' | sed "s/'//g"`
-           
-           # Si el método anterior falla, usar la lógica original (basada en posición fija, menos robusta)
-           if [ -z "$user" ]; then
-             user=`echo "$login" | awk -F" " '{print $10}' | sed -r "s/'/ /g"`
-           fi
-
-           waktu=$(ps -o etime -p $pid | awk 'NR==2 {print $1}')
-
-           while [ ${#waktu} -lt 13 ]; do
-               waktu=$waktu" "
-           done
-           while [ ${#user} -lt 16 ]; do
-               user=$user" "
-           done
-           while [ ${#PID} -lt 8 ]; do
-               PID=$PID" "
-           done
-           echo "    $user $PID $waktu"
-        fi
-    done
-}
-# --- FIN FUNCIÓN DROPBEAR ---
+TOTAL_SESSIONS=0
 
 echo -e "\E[44;1;37m Usuario        Estado        Conexión        Tiempo   \E[0m"
 echo ""
 echo ""
 
-while read usline
+while IFS=' ' read -r user s2ssh _ 
 do  
-    user="$(echo $usline | cut -d' ' -f1)"
-    s2ssh="$(echo $usline | cut -d' ' -f2)" # Límite de conexiones permitidas
+    user=$(echo "$user" | xargs)
+    s2ssh=$(echo "$s2ssh" | xargs)
     
-    # 1. SSHD Connections (más robusto con pgrep)
-    if [ "$(cat /etc/passwd| grep -w $user| wc -l)" = "1" ]; then
-      sqd=$(pgrep -u "$user" sshd | wc -l)
-    else
-      sqd=0
-    fi
-    [[ "$sqd" = "" ]] && sqd=0
+    # Obtener el conteo preciso de sesiones activas
+    read -r session_count OLDEST_PID < <(get_active_session_count "$user")
     
-    # 2. OpenVPN Connections
-    if [[ -e /etc/openvpn/openvpn-status.log ]]; then
-      ovp="$(grep -E ",$user," /etc/openvpn/openvpn-status.log | wc -l)"
-    else
-      ovp=0
-    fi
-    
-    # 3. Dropbear Connections (usando la función)
-    drop=0
-    if netstat -nltp | grep 'dropbear' > /dev/null; then
-      # Ejecutar la función y contar las líneas que contienen el usuario
-      # Se asume que fun_drop devuelve la lista de sesiones dropbear activas.
-      DROPBEAR_SESSIONS=$(fun_drop | grep -w "$user" | awk '{print $2}')
-      drop=$(echo "$DROPBEAR_SESSIONS" | wc -l)
-    fi
-    
-    cnx=$(($sqd + $drop)) # Total SSH/Dropbear
-    conex=$(($cnx + $ovp)) # Total SSH/Dropbear/OpenVPN
-
+    [[ "$session_count" = "" ]] && session_count=0
     timerr="00:00:00"
 
     # --- CALCULO DEL TIEMPO DE SESIÓN ---
-    if [[ $cnx -gt 0 ]]; then
-      # Obtener el PID más antiguo de SSHD para el tiempo de sesión más largo (representativo)
-      OLDEST_SSHD_PID=$(pgrep -u "$user" sshd | sort -n | head -1)
+    if [[ $session_count -gt 0 ]]; then
+      tst=""
       
-      if [[ -n "$OLDEST_SSHD_PID" ]]; then
-          tst="$(ps -o etime -p "$OLDEST_SSHD_PID" | awk 'NR==2 {print $1}')"
+      # Sumar al total global ANTES de limitar por s2ssh
+      TOTAL_SESSIONS=$((TOTAL_SESSIONS + session_count))
+      
+      # 1. Intentar obtener el tiempo del PID más antiguo
+      if [[ -n "$OLDEST_PID" ]]; then
+          tst="$(ps -o etime -p "$OLDEST_PID" 2>/dev/null | awk 'NR==2 {print $1}')"
+      fi
+
+      if [[ -n "$tst" ]]; then
+          timerr="$tst" 
       else
-          # Fallback para Dropbear si SSHD no está activo pero Dropbear sí
-          if [[ $drop -gt 0 ]]; then
-             # En un entorno real, necesitarías obtener el PID más antiguo de Dropbear aquí.
-             # Para simplificar y evitar más parsing de logs, se usa el tiempo del primer PID encontrado en la función
-             # Pero en este script, usaremos el mismo método que SSHD (puede que no sea preciso para Dropbear)
-             tst="??:??:??" # Marcador para indicar que el tiempo no es fácil de obtener sin el PID
+          log_start_time=$(get_ssh_log_time "$user")
+          if [[ -n "$log_start_time" ]]; then
+              timerr=$(calculate_session_time_bc "$log_start_time")
+          else
+              timerr="??:??:??" 
           fi
       fi
       
-      # Formato de tiempo para SSHD/Dropbear
-      tst1=$(echo "$tst" | wc -c)
-      if [[ "$tst1" == "9" ]]; then 
-          timerr="$tst" # Formato ya incluye días D-HH:MM:SS
-      elif [[ -n "$tst" ]]; then
-          timerr="00:$tst"
+      # 2. Limitar el conteo a mostrar al máximo del usuario
+      if [ "$session_count" -gt "$s2ssh" ]; then
+          session_count=$s2ssh
       fi
-
-    elif [[ $ovp -gt 0 ]]; then
-      # Cálculo de tiempo para OpenVPN
-      tmp2=$(printf '%(%H:%M:%S)T\n')
-      tmp1="$(grep -w "$user" /etc/openvpn/openvpn-status.log | awk '{print $4}' | head -1)"
-      [[ "$tmp1" = "" ]] && tmp1="00:00:00" && tmp2="00:00:00"
-      
-      # Se mantiene la lógica de cálculo con 'bc'
-      var1=`echo $tmp1 | cut -c 1-2`
-      var2=`echo $tmp1 | cut -c 4-5`
-      var3=`echo $tmp1 | cut -c 7-8`
-      var4=`echo $tmp2 | cut -c 1-2`
-      var5=`echo $tmp2 | cut -c 4-5`
-      var6=`echo $tmp2 | cut -c 7-8`
-      
-      calc1=`echo "$var1*3600 + $var2*60 + $var3" | bc`
-      calc2=`echo "$var4*3600 + $var5*60 + $var6" | bc`
-      
-      seg=$(($calc2 - $calc1))
-      min=$(($seg/60))
-      seg=$(($seg-$min*60))
-      hor=$(($min/60))
-      min=$(($min-$hor*60))
-      timerusr=`printf "%02d:%02d:%02d \n" $hor $min $seg;`
-      timerr=$(echo "$timerusr" | sed -e 's/[^0-9:]//ig' )
     fi
-    # --- FIN CALCULO DEL TIEMPO DE SESIÓN ---
+    # --- FIN CALCULO DEL TIEMPO Y CONTEO ---
 
     # --- MOSTRAR RESULTADOS ---
-    if [[ $conex -eq 0 ]]; then
+    if [[ $session_count -eq 0 ]]; then
        status=$(echo -e "\033[1;31mOffline \033[1;33m       ")
        echo -ne "\033[1;33m"
-       printf '%-17s%-14s%-10s%s\n' " $user"        "$status"        "$conex/$s2ssh"        "$timerr" 
+       printf '%-17s%-14s%-10s%s\n' " $user" "$status" "0/$s2ssh" "$timerr" 
     else
        status=$(echo -e "\033[1;32mOnline\033[1;33m         ")
        echo -ne "\033[1;33m"
-       printf '%-17s%-14s%-10s%s\n' " $user"        "$status"        "$conex/$s2ssh"        "$timerr"
+       printf '%-17s%-14s%-10s%s\n' " $user" "$status" "$session_count/$s2ssh" "$timerr"
     fi
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     
 done < "$database"
 
+# --- RESUMEN FINAL ---
+echo -e "\n\E[44;1;37m Sesiones Totales Activas: $TOTAL_SESSIONS \E[0m"
+
+echo -e "\033[0m" 
 fi
-#exit
