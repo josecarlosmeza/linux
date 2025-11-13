@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script de configuración para el sistema de expiración de usuarios en AlmaLinux.
-
+# Solo debe aplicarse una ves testeado en almalinux 9
 # --- 1. Definición de Variables ---
 VERIFY_SCRIPT="/usr/local/bin/check_expired_users.sh"
 LOG_FILE="/var/log/user_expiry.log"
