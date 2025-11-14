@@ -28,23 +28,65 @@ EXEC_COMMAND="${DROPBEAR_SBIN} -F -p ${DROPBEAR_PORT} -r ${RSA_KEY} -b ${BANNER_
 
 echo "--- 🛠️ Iniciando Instalación Final de Dropbear (Seguridad/Shell Restringido) ---"
 
+#!/bin/bash
+
+# =======================================================
+#               CONFIGURACIÓN DEL SCRIPT
+# =======================================================
+
+DROPBEAR_VERSION="2024.84" 
+NUEVA_VERSION_STRING="dropbear_MiServidorPrivado_v2024" 
+DROPBEAR_PORT="2222" 
+PREFIX="/usr/local" 
+BANNER_FILE="/etc/issue.net"
+
+# Variables internas
+TAR_FILE="dropbear-${DROPBEAR_VERSION}.tar.bz2"
+SRC_DIR="dropbear-${DROPBEAR_VERSION}"
+VERSION_FILE="version.h"
+DROPBEAR_SBIN="${PREFIX}/sbin/dropbear"
+KEYS_DIR="${PREFIX}/etc"
+
+# Comando de inicio CORREGIDO: SE ELIMINA LA OPCIÓN INVÁLIDA -v
+RSA_KEY="${KEYS_DIR}/dropbear_rsa_host_key"
+EXEC_COMMAND="${DROPBEAR_SBIN} -F -p ${DROPBEAR_PORT} -r ${RSA_KEY} -b ${BANNER_FILE}"
+
+# =======================================================
+#               PASOS DE INSTALACIÓN Y COMPILACIÓN
+# =======================================================
+
+echo "--- 🛠️ Dropbear: Iniciando Instalación Completa (Compilación y Servicio Corregidos) ---"
+
+# Limpieza de intentos anteriores
+sudo rm -rf ${SRC_DIR} ${TAR_FILE}
+
 # 1. Instalar dependencias y Compilar (PAM habilitado)
 echo "1. Instalando dependencias, compilando e instalando Dropbear (con soporte PAM)..."
-sudo dnf install -y gcc make zlib-devel wget pam-devel
-wget https://matt.ucc.asn.au/dropbear/releases/${TAR_FILE}
+sudo dnf install -y gcc make zlib-devel wget pam-devel || { echo "ERROR: Falló la instalación de dependencias. Saliendo."; exit 1; }
+
+wget https://matt.ucc.asn.au/dropbear/releases/${TAR_FILE} || { echo "ERROR: Falló la descarga de Dropbear. Saliendo."; exit 1; }
 tar -xf ${TAR_FILE}
-cd ${SRC_DIR}
+cd ${SRC_DIR} || { echo "ERROR: No se pudo acceder al directorio fuente. Saliendo."; exit 1; }
+
+# Cambiar la cadena de versión
 sed -i "s|#define DROPBEAR_VERSION \"dropbear_${DROPBEAR_VERSION}\"|#define DROPBEAR_VERSION \"${NUEVA_VERSION_STRING}\"|g" ${VERSION_FILE}
+
+# Configurar con PAM y Zlib
 ./configure --prefix=${PREFIX} --enable-zlib --enable-pam
-make
+
+# === CORRECCIÓN DE VINCULACIÓN: Rutas y librerías explícitas para libpam ===
+echo "-> Ejecutando 'make' con vinculación explícita a libpam..."
+make LDFLAGS="-L/usr/lib64 -L/lib64 -lpam" || { echo "ERROR: Falló la compilación o vinculación (make). Revisar log."; exit 1; }
+# ===========================================================================
+
 sudo make install
 
 # 2. Generar y Limpiar Claves
 echo "2. Generando claves de host..."
 sudo mkdir -p ${KEYS_DIR}
 sudo rm -f ${KEYS_DIR}/*host_key* ${KEYS_DIR}/*.pub
-sudo ${DROPBEAR_BIN} -t rsa -f ${RSA_KEY}
-sudo ${DROPBEAR_BIN} -t ed25519 -f ${KEYS_DIR}/dropbear_ed25519_host_key
+sudo ${PREFIX}/bin/dropbearkey -t rsa -f ${RSA_KEY}
+sudo ${PREFIX}/bin/dropbearkey -t ed25519 -f ${KEYS_DIR}/dropbear_ed25519_host_key
 
 # 3. Crear Banner
 if [ ! -f "${BANNER_FILE}" ]; then
@@ -52,35 +94,48 @@ if [ ! -f "${BANNER_FILE}" ]; then
     sudo echo -e "========================================================\nADVERTENCIA: Acceso solo para transferencia de archivos. Sin Shell interactivo.\n========================================================" | sudo tee ${BANNER_FILE} > /dev/null
 fi
 
-# 4. Limpieza
+# 4. Limpieza de fuentes
 cd ..
 rm -rf ${SRC_DIR} ${TAR_FILE}
 
+# === CORRECCIÓN DE PERMISOS SELINUX (Por si acaso) ===
+echo "4b. Restableciendo contextos SELinux para binarios y claves..."
+sudo restorecon -R -v /usr/local/sbin/dropbear
+sudo restorecon -R -v /usr/local/etc/
+sudo restorecon -R -v /etc/issue.net
+
 ---
-## ⚙️ Configuración de Seguridad (PAM y Shell Restringido)
 
-# 5. Copiar configuración PAM de sshd
-echo "5. Copiando configuración PAM de sshd a dropbear..."
-sudo cp /etc/pam.d/sshd /etc/pam.d/dropbear
+## ⚙️ Configuración de Seguridad y PAM
 
-# 6. [CRÍTICO] Asegurar que /bin/false esté en /etc/shells para permitir el inicio de sesión restringido
-echo "6. Verificando y añadiendo /bin/false a /etc/shells para seguridad..."
+# 5. [CRÍTICO] Configuración de PAM para Dropbear
+echo "5. Configurando /etc/pam.d/dropbear (Límites, Audit y Unix auth)..."
+sudo tee /etc/pam.d/dropbear > /dev/null <<EOL
+#%PAM-1.0
+auth       required     pam_unix.so shadow nullok
+account    required     pam_unix.so
+session    required     pam_limits.so      # Habilita lectura de limits.conf
+session    required     pam_loginuid.so    # Soporte UID para auditoría
+session    optional     pam_systemd.so     # Soporte de UUID de sesión
+session    required     pam_unix.so
+EOL
+
+# 6. Asegurar /bin/false esté en /etc/shells
+echo "6. Verificando y añadiendo /bin/false a /etc/shells..."
 if ! grep -q '/bin/false' /etc/shells; then
-    # Añadimos /bin/false para que Dropbear lo reconozca como shell válido.
     echo "/bin/false" | sudo tee -a /etc/shells > /dev/null
     echo "   -> /bin/false ha sido añadido a /etc/shells."
-else
-    echo "   -> /bin/false ya estaba en /etc/shells."
 fi
 
 ---
 ## 💾 Configuración del Servicio (SYSTEMD)
 
 # 7. Crear el archivo de servicio systemd
-echo "7. Creando archivo de servicio systemd con el comando final corregido..."
+echo "7. Creando archivo de servicio systemd para Dropbear..."
 sudo systemctl stop dropbear.service
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/dropbear.service"
 
+# === CORRECCIÓN: EjecStart utiliza la variable EXEC_COMMAND sin el -v inválido ===
 sudo tee ${SYSTEMD_SERVICE_FILE} > /dev/null <<EOL
 [Unit]
 Description=Dropbear SSH Server (Custom Build)
@@ -102,14 +157,15 @@ sudo systemctl enable dropbear
 sudo systemctl restart dropbear
 
 # 9. Configurar Firewalld
-echo "9. Configurando Firewalld (si está activo)..."
+echo "9. Configurando Firewalld (si está activo) para puerto ${DROPBEAR_PORT}..."
 if sudo systemctl is-active firewalld >/dev/null; then
     sudo firewall-cmd --add-port=${DROPBEAR_PORT}/tcp --permanent
     sudo firewall-cmd --reload
+    echo "   -> Puerto ${DROPBEAR_PORT} abierto en Firewalld."
 fi
 
 echo "======================================================="
-echo "✅ INSTALACIÓN FINAL Y COMPLETA."
-echo "   - Ahora los usuarios con /bin/false deberían poder autenticarse (para SCP/SFTP) pero serán rechazados de una shell interactiva."
-echo "===================================
-===================="
+echo "✅ ÉXITO: INSTALACIÓN Y SERVICIO CORREGIDOS."
+echo "   Servicio Dropbear activo en puerto: ${DROPBEAR_PORT}"
+echo "   Verifique el estado: sudo systemctl status dropbear"
+echo "======================================================="
