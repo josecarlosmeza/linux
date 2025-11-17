@@ -1,0 +1,83 @@
+#!/bin/bash
+echo "--- 🛠️  INICIANDO INSTALACIÓN DEL LIMITADOR DE SESIONES OPENSSH ---"
+echo ""
+
+# --- CONFIGURACIÓN DE RUTAS ---
+LIMITER_PATH="/usr/bin/check_ssh_limits.sh"
+DB_SOURCE="/root/usuarios.db"
+PAM_SSHD_FILE="/etc/pam.d/sshd"
+
+# --- 1. CREAR ARCHIVO DE LÍMITES DE EJEMPLO ---
+echo "--- 1. Creando archivo de límites de ejemplo: $DB_SOURCE ---"
+if [ ! -f "$DB_SOURCE" ]; then
+    sudo tee "$DB_SOURCE" > /dev/null <<EOF
+# USUARIO LIMITE
+* 3  # Límite global por defecto: 3 sesiones
+REDLIBRE 10 # Límite específico para REDLIBRE: 10 sesiones
+EOF
+    echo "✅ Archivo de límites inicial creado."
+else
+    echo "✅ Archivo de límites ya existe. Se usará el contenido actual."
+fi
+
+# --- 2. CREAR SCRIPT LIMITADOR (PAM_EXEC) ---
+echo "--- 2. Creando Script Limitador: $LIMITER_PATH ---"
+sudo tee "$LIMITER_PATH" > /dev/null <<'EOF_LIMITER'
+#!/bin/bash
+# Script de límite ejecutado por OpenSSH a través de PAM
+DB_SOURCE="/root/usuarios.db"
+USER="$PAM_USER"
+MAX_ALLOWED=3
+
+# 1. Obtener Límite del Archivo de Base de Datos
+USER_LIMIT=$(grep "^$USER " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
+
+if [ -z "$USER_LIMIT" ]; then
+    USER_LIMIT=$(grep "^\* " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
+fi
+
+if [ -n "$USER_LIMIT" ]; then
+    MAX_ALLOWED="$USER_LIMIT"
+fi
+
+# 2. Contar Sesiones Activas (Método 'who')
+# Contamos cuántas veces aparece el nombre del usuario (la sesión actual cuenta).
+CURRENT_SESSIONS=$(who | grep -c "^$USER ")
+
+# 3. Aplicar Límite
+if [ "$CURRENT_SESSIONS" -ge "$MAX_ALLOWED" ]; then
+    logger -t ssh_limiter "DENIED: Login para $USER. Sesiones: $CURRENT_SESSIONS (Max: $MAX_ALLOWED)."
+    exit 1
+else
+    logger -t ssh_limiter "PERMITIDO: Login para $USER. Sesiones: $CURRENT_SESSIONS (Max: $MAX_ALLOWED)."
+    exit 0
+fi
+EOF_LIMITER
+sudo chmod +x "$LIMITER_PATH"
+echo "✅ Script limitador creado y con permisos de ejecución."
+
+# --- 3. CONFIGURAR PAM PARA EJECUTAR EL LÍMITE ---
+echo "--- 3. Configurando PAM ($PAM_SSHD_FILE) ---"
+
+# 3.1. Eliminar cualquier línea previa que ejecute este script para evitar duplicados.
+sudo sed -i "/$LIMITER_PATH/d" "$PAM_SSHD_FILE"
+
+# 3.2. Añadir la línea de ejecución en la fase 'account' (Verificación de cuenta, antes de iniciar sesión).
+# Usamos 'account' porque es donde se verifica si el usuario puede iniciar sesión.
+sudo sed -i "/^account\s*required\s*pam_unix.so/i account\trequired\t\tpam_exec.so expose_authtok $LIMITER_PATH" "$PAM_SSHD_FILE"
+echo "✅ Línea de ejecución de límite añadida a la sección 'account' de PAM."
+
+# --- 4. REINICIAR OPENSSH ---
+echo "--- 4. Reiniciando OpenSSH ---"
+sudo systemctl daemon-reload
+sudo systemctl restart sshd
+echo "✅ OpenSSH reiniciado. El sistema de limitación de sesiones está activo."
+echo ""
+echo "--- 🎉 INSTALACIÓN COMPLETADA ---"
+echo ""
+echo "▶️  PRUEBA:"
+echo "1. Intenta iniciar sesión con tu usuario de prueba (ej. REDLIBRE)."
+echo "2. Abre más de 10 sesiones para ver el rechazo (basado en el límite del archivo)."
+echo "3. Revisa el log de rechazo con:"
+echo "   sudo journalctl -n 50 | grep 's
+sh_limiter'"
