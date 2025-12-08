@@ -5,36 +5,6 @@
 # =======================================================
 
 DROPBEAR_VERSION="2024.84" 
-NUEVA_VERSION_STRING="dropbear_REDLIBRE-3794776469" 
-DROPBEAR_PORT="2222" 
-PREFIX="/usr/local" 
-BANNER_FILE="/etc/issue.net"
-
-# Variables internas
-TAR_FILE="dropbear-${DROPBEAR_VERSION}.tar.bz2"
-SRC_DIR="dropbear-${DROPBEAR_VERSION}"
-VERSION_FILE="version.h"
-DROPBEAR_SBIN="${PREFIX}/sbin/dropbear"
-DROPBEAR_BIN="${PREFIX}/bin/dropbearkey"
-KEYS_DIR="${PREFIX}/etc"
-
-# Comando de inicio: Solo RSA y Banner
-RSA_KEY="${KEYS_DIR}/dropbear_rsa_host_key"
-EXEC_COMMAND="${DROPBEAR_SBIN} -F -p ${DROPBEAR_PORT} -r ${RSA_KEY} -b ${BANNER_FILE}"
-
-# =======================================================
-#               PASOS DE INSTALACIÓN
-# =======================================================
-
-echo "--- 🛠️ Iniciando Instalación Final de Dropbear (Seguridad/Shell Restringido) ---"
-
-#!/bin/bash
-
-# =======================================================
-#               CONFIGURACIÓN DEL SCRIPT
-# =======================================================
-
-DROPBEAR_VERSION="2024.84" 
 NUEVA_VERSION_STRING="dropbear_MiServidorPrivado_v2024" 
 DROPBEAR_PORT="2222" 
 PREFIX="/usr/local" 
@@ -59,6 +29,19 @@ echo "--- 🛠️ Dropbear: Iniciando Instalación Completa (Compilación y Serv
 
 # Limpieza de intentos anteriores
 sudo rm -rf ${SRC_DIR} ${TAR_FILE}
+
+# =======================================================
+#               NUEVO PASO: VERIFICACIÓN DE CONECTIVIDAD
+# =======================================================
+
+echo "0. 🌐 Verificando conexión a Internet antes de la descarga..."
+# Intentamos una descarga silenciosa del sitio de Dropbear
+wget -q --spider https://matt.ucc.asn.au/dropbear/releases/ || { 
+    echo "ERROR: Falló la verificación de conectividad. Revise su red o proxy."
+    exit 1
+}
+echo "   -> Conexión a Internet exitosa."
+# =======================================================
 
 # 1. Instalar dependencias y Compilar (PAM habilitado)
 echo "1. Instalando dependencias, compilando e instalando Dropbear (con soporte PAM)..."
@@ -168,4 +151,5 @@ echo "======================================================="
 echo "✅ ÉXITO: INSTALACIÓN Y SERVICIO CORREGIDOS."
 echo "   Servicio Dropbear activo en puerto: ${DROPBEAR_PORT}"
 echo "   Verifique el estado: sudo systemctl status dropbear"
-echo "======================================================="
+echo "=========================
+=============================="
