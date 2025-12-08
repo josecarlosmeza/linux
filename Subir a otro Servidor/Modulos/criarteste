@@ -1,11 +1,15 @@
 #!/bin/bash
-# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL[revisar los servicios atd para que funcione bien]
+# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL 8
 
 # --- CONFIGURACIÓN Y CHEQUEO INICIAL ---
-IP=$(cat /etc/IP)
+IP=$(cat /etc/IP 2>/dev/null || echo "IP_NO_ENCONTRADA")
 TEST_DIR="/etc/SSHPlus/userteste"
 DB_FILE="/root/usuarios.db"
 PASS_DIR="/etc/SSHPlus/senha"
+
+# Ruta del shell no interactivo (ajustado para RHEL/AlmaLinux 8)
+NOLOGIN_SHELL="/usr/sbin/nologin" 
+# Alternativa: /sbin/nologin
 
 # Crear directorios necesarios
 mkdir -p "$TEST_DIR" "$PASS_DIR"
@@ -14,10 +18,28 @@ mkdir -p "$TEST_DIR" "$PASS_DIR"
 error_exit() {
     echo ""
     tput setaf 7 ; tput setab 1 ; tput bold
-    echo "" ; echo "$1" ; echo ""
+    echo "" ; echo "ERROR: $1" ; echo ""
     tput sgr0
+    # Limpiar usuario si se creó pero la programación falló (por seguridad)
+    if id -u "$nome" &>/dev/null; then
+        userdel --force "$nome" > /dev/null 2>&1
+        rm -f "$PASS_DIR/$nome" "$DB_FILE"
+    fi
     exit 1
 }
+
+# --- VALIDACIÓN DE REQUISITOS (atd) ---
+if ! systemctl is-active --quiet atd; then
+    # Intenta habilitar atd si no está activo, o muestra error si no está instalado
+    if ! systemctl enable --now atd; then
+        error_exit "El servicio 'atd' (programador de tareas) no está activo. Ejecuta: dnf install at && systemctl enable --now atd"
+    fi
+fi
+if [[ ! -x "$NOLOGIN_SHELL" ]]; then
+    error_exit "El shell $NOLOGIN_SHELL no existe o no es ejecutable. Revisar la instalación del sistema."
+fi
+
+# ... (El resto del script es casi idéntico) ...
 
 # --- VISUALIZACIÓN DE ESTADO ---
 clear
@@ -46,8 +68,7 @@ echo ""
 # 1. Nombre de Usuario
 echo -ne "\033[1;32mNombre del Usuario\033[1;37m: " ; read nome
 [[ -z "$nome" ]] && error_exit "Nombre vacío o invalido."
-
-# Comprobar si el usuario existe usando 'id -u' (estándar en AlmaLinux)
+# Comprobar si el usuario existe usando 'id -u'
 if id -u "$nome" &>/dev/null; then
     error_exit "Este usuário ya existe."
 fi
@@ -69,12 +90,12 @@ if ! [[ "$u_temp" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # --- CREACIÓN Y CONFIGURACIÓN DEL USUARIO ---
-# Uso de /sbin/nologin (estándar en AlmaLinux/RHEL para denegar shell)
-if ! useradd -M -s /sbin/nologin "$nome"; then
+# Uso de /usr/sbin/nologin (ajustado para RHEL/AlmaLinux 8)
+if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
     error_exit "Falla al crear usuario en el sistema."
 fi
 
-# Establecer contraseña usando chpasswd (más directo y seguro que 'echo | passwd')
+# Establecer contraseña usando chpasswd
 echo "$nome:$pass" | chpasswd
 
 # Guardar datos en las bases de datos del script
@@ -92,7 +113,7 @@ cat << EOF > "$DELETE_SCRIPT"
 pkill -u "$nome"
 
 # 2. Eliminar el usuario del sistema
-userdel --force "$nome"
+userdel --force "$nome" > /dev/null 2>&1
 
 # 3. Eliminar la entrada del usuario de la base de datos de límites (con sed)
 sed -i.bak '/^'"$nome"'[[:space:]]/d' "$DB_FILE" > /dev/null 2>&1
@@ -110,7 +131,7 @@ at_output=$(at -f "$DELETE_SCRIPT" "now + $u_temp min" 2>&1)
 # Verificación de que 'at' se programó correctamente
 if [[ $? -ne 0 ]]; then
     # Si falla, se muestra el error de 'at' y se sale.
-    error_exit "Falha ao programar a eliminação automática (at). Erro: $at_output"
+    error_exit "Falha ao programar a eliminação automática (at). Erro: $at_output. Asegurese que el servicio 'atd' esté activo."
 fi
 
 # --- SALIDA FINAL ---
