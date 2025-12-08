@@ -1,15 +1,12 @@
 #!/bin/bash
-# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL 8
+# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL 8 y 9
 
 # --- CONFIGURACIÓN Y CHEQUEO INICIAL ---
 IP=$(cat /etc/IP 2>/dev/null || echo "IP_NO_ENCONTRADA")
 TEST_DIR="/etc/SSHPlus/userteste"
 DB_FILE="/root/usuarios.db"
 PASS_DIR="/etc/SSHPlus/senha"
-
-# Ruta del shell no interactivo (ajustado para RHEL/AlmaLinux 8)
-NOLOGIN_SHELL="/usr/sbin/nologin" 
-# Alternativa: /sbin/nologin
+NOLOGIN_SHELL="/usr/sbin/nologin" # Ruta estándar para RHEL/AlmaLinux 8 y 9
 
 # Crear directorios necesarios
 mkdir -p "$TEST_DIR" "$PASS_DIR"
@@ -23,23 +20,26 @@ error_exit() {
     # Limpiar usuario si se creó pero la programación falló (por seguridad)
     if id -u "$nome" &>/dev/null; then
         userdel --force "$nome" > /dev/null 2>&1
-        rm -f "$PASS_DIR/$nome" "$DB_FILE"
+        rm -f "$PASS_DIR/$nome" "$DB_FILE" > /dev/null 2>&1
     fi
     exit 1
 }
 
 # --- VALIDACIÓN DE REQUISITOS (atd) ---
+# Comprueba y activa atd, esencial para la programación de la eliminación
 if ! systemctl is-active --quiet atd; then
-    # Intenta habilitar atd si no está activo, o muestra error si no está instalado
-    if ! systemctl enable --now atd; then
-        error_exit "El servicio 'atd' (programador de tareas) no está activo. Ejecuta: dnf install at && systemctl enable --now atd"
+    echo -e "\033[1;33mADVERTENCIA: El servicio 'atd' no está activo. Intentando habilitar...\033[0m"
+    if ! systemctl enable --now atd > /dev/null 2>&1; then
+        error_exit "El servicio 'atd' (programador de tareas) no está activo ni pudo ser iniciado. Ejecuta: dnf install at -y && systemctl enable --now atd"
+    else
+        echo -e "\033[1;32m'atd' habilitado y activo correctamente.\033[0m"
     fi
 fi
+# Comprueba que la shell de no login exista
 if [[ ! -x "$NOLOGIN_SHELL" ]]; then
     error_exit "El shell $NOLOGIN_SHELL no existe o no es ejecutable. Revisar la instalación del sistema."
 fi
 
-# ... (El resto del script es casi idéntico) ...
 
 # --- VISUALIZACIÓN DE ESTADO ---
 clear
@@ -58,7 +58,7 @@ echo ""
 
 # Lista usuarios de prueba activos
 echo "Usuarios de prueba Activos:"
-for testeson in $(ls "$TEST_DIR" | sort | sed 's/\.sh$//g'); do
+for testeson in $(ls "$TEST_DIR" 2>/dev/null | sort | sed 's/\.sh$//g'); do
     echo "$testeson"
 done
 echo ""
@@ -90,7 +90,7 @@ if ! [[ "$u_temp" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # --- CREACIÓN Y CONFIGURACIÓN DEL USUARIO ---
-# Uso de /usr/sbin/nologin (ajustado para RHEL/AlmaLinux 8)
+# Uso de /usr/sbin/nologin (ajustado para RHEL/AlmaLinux 8/9)
 if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
     error_exit "Falla al crear usuario en el sistema."
 fi
@@ -144,7 +144,8 @@ echo -e "\033[1;32mContraseña:\033[1;37m $pass"
 echo -e "\033[1;32mLimite:\033[1;37m $limit"
 echo -e "\033[1;32mValido:\033[1;37m $u_temp Minutos"
 echo ""
-echo -e "\033[1;37m $nome:\033[1;37m $pass"
+# Línea corregida al formato usuario:contraseña (todo en blanco brillante)
+echo -e "\033[1;37m$nome:$pass\033[0m"
 echo ""
 echo -e "\033[1;33mTranscurrido el tiempo definido del usuario"
 echo -e "\033[1;32m$nome \033[1;33msera desconectado y borrado.\033[0m"
