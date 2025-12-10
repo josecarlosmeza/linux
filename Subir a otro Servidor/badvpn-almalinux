@@ -21,22 +21,41 @@ check_status() {
     fi
 }
 
-# --- 1. Preparación del Sistema y Detección de Núcleos ---
+# --- 1. Preparación del Sistema y Detección de Núcleos (Corregido) ---
 echo -e "\n--- 1. Preparando el sistema e instalando dependencias ---"
 sudo dnf update -y
-sudo dnf install git cmake gcc make nproc -y
+# Se añaden paquetes clave y se incluye util-linux para asegurar la presencia de utilidades de sistema
+sudo dnf install git cmake gcc make util-linux -y 
 check_status
 
-# Detección de núcleos para el parámetro --nthreads
-NUM_CORES=$(nproc)
+# Detección de núcleos:
+# 1. Intentar usar nproc (opción más limpia)
+NUM_CORES=$(nproc 2>/dev/null)
+
+# 2. Si nproc falla (devuelve cadena vacía), usar lscpu (opción robusta)
+if [ -z "$NUM_CORES" ]; then
+    NUM_CORES=$(lscpu -p | grep -c '^#') # Cuenta el número de líneas de CPU en la salida de lscpu
+fi
+
+# 3. Si sigue fallando, usar /proc/cpuinfo (opción de respaldo universal)
+if [ -z "$NUM_CORES" ]; then
+    NUM_CORES=$(grep -c ^processor /proc/cpuinfo)
+fi
+
 NUM_THREADS=${NUM_CORES}
-echo "✅ Dependencias instaladas. Detectados ${NUM_CORES} núcleos para badvpn-udpgw."
+if [ "$NUM_THREADS" -eq 0 ]; then
+    echo "⚠️ ADVERTENCIA: No se pudo detectar el número de núcleos. Asignando 1 thread por defecto."
+    NUM_THREADS=1
+fi
+
+echo "✅ Dependencias instaladas. Detectados ${NUM_CORES} núcleos. Usando ${NUM_THREADS} threads."
 
 # --- 2. Descarga y Compilación de badvpn-udpgw ---
+# ... (Resto del script es idéntico al anterior) ...
+
 echo -e "\n--- 2. Descargando y compilando badvpn-udpgw ---"
 cd /opt
 
-# Limpiar directorio si existe
 if [ -d "badvpn" ]; then
     sudo rm -rf badvpn
 fi
@@ -47,7 +66,6 @@ check_status
 cd badvpn
 sudo mkdir build
 cd build
-# Compila solo udpgw y lo instala
 sudo cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
 check_status
 sudo make
@@ -59,7 +77,6 @@ echo "✅ Compilación e instalación del binario completadas."
 # --- 3. Creación y Configuración del Servicio Systemd ---
 echo -e "\n--- 3. Creando el archivo de servicio Systemd optimizado ---"
 
-# Construcción de la línea ExecStart con todos los parámetros
 NEW_EXEC_START="/usr/local/bin/badvpn-udpgw --loglevel warning --listen-addr 127.0.0.1:7300 --nthreads ${NUM_THREADS} --max-clients ${MAX_CLIENTS} --max-connections-for-client ${MAX_CONNECTIONS}"
 
 cat << EOF | sudo tee ${SERVICE_FILE}
@@ -77,7 +94,6 @@ WantedBy=multi-user.target
 EOF
 check_status
 
-# Iniciar y habilitar el servicio
 sudo systemctl daemon-reload
 sudo systemctl enable badvpn-udpgw.service
 sudo systemctl start badvpn-udpgw.service
@@ -87,7 +103,6 @@ echo "✅ Servicio badvpn-udpgw habilitado e iniciado con ${NUM_THREADS} threads
 # --- 4. Optimización del Kernel (sysctl) ---
 echo -e "\n--- 4. Aplicando ajustes de red avanzados (sysctl) ---"
 
-# Eliminar líneas optimizadas existentes para evitar duplicados
 sudo sed -i '/^# Configuración optimizada para servidores SSH\/VPN/,/^vm.swappiness = 10/d' ${SYSCTL_CONF}
 
 cat << EOF | sudo tee -a ${SYSCTL_CONF}
@@ -107,14 +122,12 @@ echo "✅ Parámetros de sysctl actualizados y aplicados."
 # --- 5. Optimización del Servidor SSH (sshd_config) ---
 echo -e "\n--- 5. Optimizando la configuración de SSH (sshd_config) ---"
 
-# 5.1 Desactivar la compresión SSH
 sudo sed -i '/^Compression/d' ${SSH_CONF}
 echo "Compression no" | sudo tee -a ${SSH_CONF} > /dev/null
 
-# 5.2 Usar cifrados modernos y rápidos
 sudo sed -i '/^Ciphers/d' ${SSH_CONF}
 sudo sed -i '/^KexAlgorithms/d' ${SSH_CONF}
-echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@opensenssh.com" | sudo tee -a ${SSH_CONF} > /dev/null
+echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com" | sudo tee -a ${SSH_CONF} > /dev/null
 echo "KexAlgorithms curve25519-sha256@libssh.org" | sudo tee -a ${SSH_CONF} > /dev/null
 
 sudo systemctl restart sshd
@@ -125,4 +138,9 @@ echo "✅ Servicio SSH reiniciado con configuración optimizada."
 echo -e "\n========================================================"
 echo "                 ✅ INSTALACIÓN COMPLETA ✅                "
 echo "========================================================"
-echo "  - badvpn-udpgw está ejecutándose
+echo "  - badvpn-udpgw está ejecutándose y escuchando en: 127.0.0.1:7300"
+echo "  - Threads asignados: ${NUM_THREADS}"
+echo "--------------------------------------------------------"
+echo "Verificar estado: sudo systemctl status badvpn-udpgw"
+echo "====================================================
+===="
