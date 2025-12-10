@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# --- Script Integral y Optimizado para badvpn-udpgw (Multi-threaded) en AlmaLinux ---
+# --- Script Integral y Optimizado para badvpn-udpgw (Estable) en AlmaLinux ---
 
 echo "================================================================="
-echo " INICIO: Instalación y Optimización de badvpn-udpgw (Multi-hilo) "
+echo " INICIO: Instalación Estable de badvpn-udpgw (Repositorio Oficial) "
 echo "================================================================="
 
 # --- Variables de Configuración ---
@@ -21,34 +21,25 @@ check_status() {
     fi
 }
 
-# --- 1. Preparación del Sistema y Detección de Núcleos ---
-echo -e "\n--- 1. Preparando el sistema e instalando dependencias ---"
+# --- 1. Preparación del Sistema ---
+echo -e "\n--- 1. Preparando el sistema y verificando dependencias ---"
 sudo dnf update -y
-# Incluye dependencias de compilación y utilidades de sistema
+# Incluye herramientas de compilación esenciales
 sudo dnf install git cmake gcc make util-linux -y 
 check_status
+echo "✅ Dependencias verificadas."
 
-# Detección de núcleos para el parámetro --nthreads
-NUM_CORES=$(nproc 2>/dev/null || lscpu -p | grep -c '^#$' || grep -c ^processor /proc/cpuinfo)
-NUM_THREADS=${NUM_CORES}
-
-if [ "$NUM_THREADS" -eq 0 ]; then
-    echo "⚠️ ADVERTENCIA: No se pudo detectar el número de núcleos. Asignando 1 thread por defecto."
-    NUM_THREADS=1
-fi
-echo "✅ Dependencias instaladas. Usando ${NUM_THREADS} threads para el servicio."
-
-# --- 2. Descarga y Compilación del Fork Multi-threaded ---
-echo -e "\n--- 2. Descargando y compilando el fork multi-threaded ---"
+# --- 2. Descarga y Compilación (Repositorio Oficial) ---
+echo -e "\n--- 2. Descargando y compilando desde el repositorio BASE/Oficial ---"
 cd /opt
 
-# Limpiar directorio antiguo si existe
+# Limpiar directorio si existe
 if [ -d "badvpn" ]; then
     sudo rm -rf badvpn
 fi
 
-# Clonar un fork conocido que soporta --nthreads.
-sudo git clone https://github.com/nrlquaker/badvpn.git badvpn
+# Clonar el repositorio base (el más estable)
+sudo git clone https://github.com/ambrop72/badvpn.git
 check_status
 
 cd badvpn
@@ -59,14 +50,15 @@ check_status
 sudo make
 check_status
 sudo cp udpgw/badvpn-udpgw /usr/local/bin/
+sudo chmod +x /usr/local/bin/badvpn-udpgw
 check_status
-echo "✅ Compilación e instalación del binario multi-threaded completadas."
+echo "✅ Compilación e instalación del binario estable completadas."
 
 # --- 3. Creación y Configuración del Servicio Systemd ---
 echo -e "\n--- 3. Creando el archivo de servicio Systemd optimizado ---"
 
-# Nueva línea ExecStart con todos los parámetros: --nthreads, --max-clients, --loglevel error
-NEW_EXEC_START="/usr/local/bin/badvpn-udpgw --loglevel error --listen-addr 127.0.0.1:7300 --nthreads ${NUM_THREADS} --max-clients ${MAX_CLIENTS} --max-connections-for-client ${MAX_CONNECTIONS}"
+# Ejecución con --loglevel error y límites de cliente (SIN --nthreads)
+NEW_EXEC_START="/usr/local/bin/badvpn-udpgw --loglevel error --listen-addr 127.0.0.1:7300 --max-clients ${MAX_CLIENTS} --max-connections-for-client ${MAX_CONNECTIONS}"
 
 cat << EOF | sudo tee ${SERVICE_FILE}
 [Unit]
@@ -93,7 +85,7 @@ echo "✅ Servicio badvpn-udpgw habilitado e iniciado."
 # --- 4. Optimización del Kernel (sysctl) ---
 echo -e "\n--- 4. Aplicando ajustes de red avanzados (sysctl) ---"
 
-# Eliminar líneas optimizadas existentes para evitar duplicados
+# Estas optimizaciones de sysctl reducen la latencia y mejoran el manejo de conexiones TCP.
 sudo sed -i '/^# Configuración optimizada para servidores SSH\/VPN/,/^vm.swappiness = 10/d' ${SYSCTL_CONF}
 
 cat << EOF | sudo tee -a ${SYSCTL_CONF}
@@ -108,16 +100,15 @@ EOF
 
 sudo sysctl -p
 check_status
-echo "✅ Parámetros de sysctl actualizados y aplicados." 
+echo "✅ Parámetros de sysctl actualizados y aplicados."
 
 # --- 5. Optimización del Servidor SSH (sshd_config) ---
 echo -e "\n--- 5. Optimizando la configuración de SSH (sshd_config) ---"
 
-# Desactivar compresión
+# Desactivar compresión y usar cifrados rápidos para el túnel SSH.
 sudo sed -i '/^Compression/d' ${SSH_CONF}
 echo "Compression no" | sudo tee -a ${SSH_CONF} > /dev/null
 
-# Usar cifrados modernos y rápidos
 sudo sed -i '/^Ciphers/d' ${SSH_CONF}
 sudo sed -i '/^KexAlgorithms/d' ${SSH_CONF}
 echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com" | sudo tee -a ${SSH_CONF} > /dev/null
@@ -129,10 +120,10 @@ echo "✅ Servicio SSH reiniciado con configuración optimizada."
 
 # --- 6. Verificación de Estado Final ---
 echo -e "\n========================================================="
-echo "                 ✅ INSTALACIÓN COMPLETA Y FINAL ✅       "
+echo "                 ✅ INSTALACIÓN COMPLETADA ✅              "
 echo "========================================================="
 sudo systemctl status badvpn-udpgw.service
-echo "  - badvpn-udpgw está configurado con ${NUM_THREADS} threads."
+echo "  - Estado del servicio: Debe ser 'active (running)'"
 echo "  - Logs de bajo nivel desactivados (--loglevel error)."
 echo "  - Límite de tráfico: ${MAX_CLIENTS} IPs y ${MAX_CONNECTIONS} conexiones/IP."
 echo "========================================================="
