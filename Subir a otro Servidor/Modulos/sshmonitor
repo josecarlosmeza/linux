@@ -173,5 +173,4 @@ done < "$database"
 echo -e "\n\E[44;1;37m Sesiones Totales Activas: $TOTAL_SESSIONS \E[0m"
 
 echo -e "\033[0m" 
-f
-i
+fi
