@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "--- 🛠️  INSTALACIÓN DEL LIMITADOR CORREGIDO (MÉTODO PS) ---"
+echo "--- 🛠️  INSTALACIÓN DEL LIMITADOR OPENSSH (VERSIÓN SEGURA) ---"
 echo ""
 
 # --- CONFIGURACIÓN DE RUTAS ---
@@ -7,59 +7,72 @@ LIMITER_PATH="/usr/bin/check_ssh_limits.sh"
 DB_SOURCE="/root/usuarios.db"
 PAM_SSHD_FILE="/etc/pam.d/sshd"
 
-# --- 1. CREAR ARCHIVO DE LÍMITES SI NO EXISTE ---
+# --- 1. CREAR ARCHIVO DE LÍMITES (Si no existe) ---
+echo "--- 1. Configurando base de datos de usuarios: $DB_SOURCE ---"
 if [ ! -f "$DB_SOURCE" ]; then
     sudo tee "$DB_SOURCE" > /dev/null <<EOF
 # USUARIO LIMITE
 * 3
 REDLIBRE 10
 EOF
-    echo "✅ Archivo $DB_SOURCE creado."
+    echo "✅ Archivo de límites creado."
+else
+    echo "✅ El archivo de límites ya existe."
 fi
+chmod 644 "$DB_SOURCE"
 
-# --- 2. CREAR SCRIPT LIMITADOR CORREGIDO ---
-# Este script ahora usa 'ps' en lugar de 'who' para ver túneles VPN
+# --- 2. CREAR SCRIPT LIMITADOR CON EXCEPCIÓN PARA ROOT ---
+echo "--- 2. Creando Script Limitador en $LIMITER_PATH ---"
 sudo tee "$LIMITER_PATH" > /dev/null <<'EOF_LIMITER'
 #!/bin/bash
+# Script de límite ejecutado por PAM
 DB_SOURCE="/root/usuarios.db"
 USER="$PAM_USER"
-MAX_ALLOWED=3
 
-# 1. Obtener Límite
-USER_LIMIT=$(grep "^$USER " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
-[ -z "$USER_LIMIT" ] && USER_LIMIT=$(grep "^\* " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
-[ -n "$USER_LIMIT" ] && MAX_ALLOWED="$USER_LIMIT"
-
-# 2. Contar Sesiones (MÉTODO PS - Detecta túneles y notty)
-# Contamos procesos 'sshd: usuario' excluyendo el proceso [priv] de root
-CURRENT_SESSIONS=$(ps aux | grep "sshd: $USER" | grep -v "grep" | grep -v "priv" | wc -l)
-
-# 3. Aplicar Límite
-if [ "$CURRENT_SESSIONS" -ge "$MAX_ALLOWED" ]; then
-    logger -t ssh_limiter "DENIED: $USER alcanzó el límite. ($CURRENT_SESSIONS/$MAX_ALLOWED)"
-    exit 1
-else
-    logger -t ssh_limiter "ALLOWED: $USER dentro del límite. ($CURRENT_SESSIONS/$MAX_ALLOWED)"
+# 1. EXCEPCIÓN TOTAL PARA ROOT (Seguridad ante bloqueos)
+if [ "$USER" == "root" ] || [ -z "$USER" ]; then
     exit 0
 fi
+
+# 2. OBTENER LÍMITE DEL ARCHIVO
+# Intenta buscar el usuario, si no, busca el global (*), si no, usa 3 por defecto.
+MAX_ALLOWED=$(grep "^$USER " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
+if [ -z "$MAX_ALLOWED" ]; then
+    MAX_ALLOWED=$(grep "^\* " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
+fi
+MAX_ALLOWED=${MAX_ALLOWED:-3}
+
+# 3. CONTAR SESIONES ACTUALES (Excluyendo procesos de sistema)
+# 'pgrep -u' asegura que solo contamos procesos de ese usuario específico.
+CURRENT_SESSIONS=$(pgrep -u "$USER" -f "sshd:" | wc -l)
+
+# 4. APLICAR LÓGICA DE BLOQUEO
+# Usamos -gt (mayor que) para dar margen a la sesión que está entrando.
+if [ "$CURRENT_SESSIONS" -gt "$MAX_ALLOWED" ]; then
+    logger -t ssh_limiter "DENIED: $USER excedió el límite de $MAX_ALLOWED (Activas: $CURRENT_SESSIONS)"
+    exit 1
+fi
+
+# 5. SIEMPRE PERMITIR POR DEFECTO SI NADA DE LO ANTERIOR FALLÓ
+exit 0
 EOF_LIMITER
 
 sudo chmod +x "$LIMITER_PATH"
-echo "✅ Script limitador actualizado con soporte para túneles."
+echo "✅ Script limitador instalado con protección para root."
 
 # --- 3. CONFIGURAR PAM ---
+echo "--- 3. Configurando PAM ($PAM_SSHD_FILE) ---"
+# Limpiar instalaciones previas
 sudo sed -i "/$LIMITER_PATH/d" "$PAM_SSHD_FILE"
-sudo sed -i "/^account\s*required\s*pam_unix.so/i account\trequired\t\tpam_exec.so expose_authtok $LIMITER_PATH" "$PAM_SSHD_FILE"
-echo "✅ Configuración de PAM actualizada."
 
-# --- 4. REINICIAR SERVICIOS Y LIMPIAR ---
+# Añadir la línea de ejecución de forma segura
+# Se coloca antes de pam_unix para que verifique el límite antes de dar el acceso final
+sudo sed -i "/^account\s*required\s*pam_unix.so/i account\trequired\t\tpam_exec.so $LIMITER_PATH" "$PAM_SSHD_FILE"
+echo "✅ Línea añadida a PAM."
+
+# --- 4. REINICIAR SERVICIOS ---
+echo "--- 4. Reiniciando OpenSSH ---"
 sudo systemctl restart sshd
-echo "✅ SSHD reiniciado."
-
-# Matar procesos antiguos para limpiar el servidor
-echo "⚠️ Limpiando procesos antiguos del usuario REDLIBRE..."
-pkill -u REDLIBRE 2>/dev/null
-
+echo "✅ Instalación completada con éxito."
 echo ""
-echo "--- 🎉 INSTALACIÓN FINALIZADA ---"
-echo "Ahora el sistema contará correctamente incluso si usan HTTP Custom o similares."
+echo "⚠️  NOTA: El usuario 'root' ahora tiene acceso total garantizado."
