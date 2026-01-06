@@ -1,27 +1,31 @@
 #!/bin/bash
 
-# 1. Crear directorio de trabajo
+# 1. Directorio y Script con Guía de Configuración
 mkdir -p /opt/advanced-proxy
-cd /opt/advanced-proxy
-
-# 2. Crear el script de Python optimizado para múltiples puertos
 cat <<EOF > /opt/advanced-proxy/proxy.py
 import asyncio, hashlib, base64
 
-# =================================================================
-# 🛠️ CONFIGURACIÓN
-# =================================================================
+# ==============================================================================
+# 📱 CONFIGURACIÓN PARA HTTP CUSTOM (COPIA ESTO)
+# ==============================================================================
+# [Ajustes de SSH]
+# SSH Host: [Tu_IP_o_Dominio_CloudFront]
+# SSH Port: 80 (o 443)
+# User/Pass: [Tus credenciales de Root o Usuario SSH]
+# 
+# [Payload]
+# GET / HTTP/1.1[crlf]Host: [Tu_Dominio_CloudFront][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]X-Pass: mi_password_secreto[crlf][crlf]
+#
+# [Ajustes Adicionales]
+# ✅ SSL (TLS): DESACTIVADO (El proxy es HTTP puro)
+# ✅ Auto-Ping: 20 Segundos (Obligatorio para CloudFront)
+# ==============================================================================
+
+# CONFIGURACIÓN DEL SCRIPT
 LISTENING_ADDR = '0.0.0.0'
-PORTS = [80, 443]                 # Puertos de escucha simultánea
-PASS = 'mi_password_secreto'      # Contraseña para X-Pass
-DEFAULT_TARGET = ('127.0.0.1', 444) # Destino (Dropbear SSH)
-
-# =================================================================
-# GET / HTTP/1.1[crlf]Host: usa.grabados.store[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]Sec-WebSocket-Key: [key][crlf]X-Pass: mi_password_secreto[crlf][crlf]
-
-# =================================================================
-# ⚙️ LÓGICA DEL SISTEMA
-# =================================================================
+PORTS = [80, 443]
+PASS = 'mi_password_secreto'  # Debe coincidir con X-Pass del Payload
+DEFAULT_TARGET = ('127.0.0.1', 22)
 
 def generate_ws_accept(key):
     GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -40,10 +44,14 @@ def find_header(head, header):
 async def forward(reader, writer):
     try:
         while True:
-            data = await reader.read(4096)
-            if not data: break
-            writer.write(data)
-            await writer.drain()
+            try:
+                data = await asyncio.wait_for(reader.read(4096), timeout=25)
+                if not data: break
+                writer.write(data)
+                await writer.drain()
+            except asyncio.TimeoutError:
+                writer.write(b'\x00') # Keep-alive
+                await writer.drain()
     except: pass
     finally:
         try: writer.close()
@@ -51,25 +59,20 @@ async def forward(reader, writer):
 
 async def handle(client_reader, client_writer):
     try:
-        # Leer cabecera inicial con timeout para evitar conexiones fantasma
         data = await asyncio.wait_for(client_reader.read(4096), timeout=10)
         if not data: return
         
-        # Validación de seguridad X-Pass
         passwd = find_header(data, b'X-Pass').decode('latin-1')
         if PASS and passwd != PASS:
             client_writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
             await client_writer.drain()
             return
 
-        # Generar handshake WebSocket válido
         ws_key = find_header(data, b'Sec-WebSocket-Key')
         accept_val = generate_ws_accept(ws_key) if ws_key else "AnyValue"
         
-        # Conexión al servicio SSH local
         target_reader, target_writer = await asyncio.open_connection(*DEFAULT_TARGET)
         
-        # Respuesta HTTP 101 optimizada para CDNs
         resp = ("HTTP/1.1 101 Switching Protocols\r\n"
                 "Upgrade: websocket\r\n"
                 "Connection: Upgrade\r\n"
@@ -79,7 +82,6 @@ async def handle(client_reader, client_writer):
         client_writer.write(resp)
         await client_writer.drain()
 
-        # Iniciar intercambio de datos bidireccional
         await asyncio.gather(
             forward(client_reader, target_writer),
             forward(target_reader, client_writer)
@@ -90,37 +92,21 @@ async def handle(client_reader, client_writer):
         except: pass
 
 async def start_servers():
-    tasks = []
-    for port in PORTS:
-        print(f"🚀 Iniciando servidor en puerto {port}...")
-        try:
-            server = await asyncio.start_server(handle, LISTENING_ADDR, port)
-            tasks.append(server.serve_forever())
-        except Exception as e:
-            print(f"❌ Error al abrir puerto {port}: {e}")
-    
-    if tasks:
-        await asyncio.gather(*tasks)
-    else:
-        print("🔴 No se pudo iniciar ningún puerto. Verifica si están ocupados.")
-
-def main():
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(start_servers())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        loop.close()
+    tasks = [asyncio.start_server(handle, LISTENING_ADDR, p) for p in PORTS]
+    servers = await asyncio.gather(*tasks)
+    await asyncio.gather(*[s.serve_forever() for s in servers])
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(start_servers())
+    except KeyboardInterrupt:
+        pass
 EOF
 
-# 3. Crear el archivo de servicio para Systemd
+# 2. Configuración de Systemd
 cat <<EOF > /etc/systemd/system/adv-proxy.service
 [Unit]
-Description=Advanced Multi-Port HTTP Proxy
+Description=Advanced MultiPort Proxy SSHD
 After=network.target
 
 [Service]
@@ -130,24 +116,15 @@ WorkingDirectory=/opt/advanced-proxy
 ExecStart=/usr/bin/python3 /opt/advanced-proxy/proxy.py
 Restart=always
 RestartSec=3
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 4. Configurar Firewall (Abrir puertos 80 y 443)
-firewall-cmd --permanent --add-port=80/tcp
-firewall-cmd --permanent --add-port=443/tcp
-firewall-cmd --reload
-
-# 5. Habilitar y arrancar el servicio
+# 3. Aplicar y Reiniciar
 systemctl daemon-reload
 systemctl enable adv-proxy
 systemctl restart adv-proxy
 
-echo "------------------------------------------------"
-echo "✅ Instalación completada."
-echo "✅ Puertos activos: 80 y 443 (HTTP Puro)"
-echo "✅ Redirigiendo a Dropbear en 127.0.0.1:444"
-echo "------------------------------------------------"
-systemctl status adv-proxy --no-pager
+echo "✅ Instalado. Abre /opt/advanced-proxy/proxy.py para ver tu Payload."
