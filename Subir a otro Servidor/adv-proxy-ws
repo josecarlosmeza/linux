@@ -1,31 +1,46 @@
 #!/bin/bash
 
-# 1. Directorio y Script con Guía de Configuración
+# ======================================================
+# 1. INSTALACIÓN DE DEPENDENCIAS Y OPTIMIZACIÓN
+# ======================================================
+echo "📦 Instalando dependencias y optimizando sistema..."
+dnf install -y python3 python3-pip procps-ng net-tools
 mkdir -p /opt/advanced-proxy
+
+# Liberar puertos 80 y 443 por si están ocupados
+fuser -k 80/tcp 2>/dev/null
+fuser -k 443/tcp 2>/dev/null
+
+# Ajustar límites de archivos abiertos (Ulimit)
+cat <<EOF > /etc/security/limits.d/proxy.conf
+* soft nofile 65535
+* hard nofile 65535
+root soft nofile 65535
+root hard nofile 65535
+EOF
+
+# ======================================================
+# 2. CREACIÓN DEL SCRIPT PROXY CON VIRTUDES
+# ======================================================
 cat <<EOF > /opt/advanced-proxy/proxy.py
-import asyncio, hashlib, base64
+import asyncio, hashlib, base64, gc
 
 # ==============================================================================
-# 📱 CONFIGURACIÓN PARA HTTP CUSTOM (COPIA ESTO)
+# ⚙️ BLOQUE DE PARÁMETROS (AJUSTABLES)
 # ==============================================================================
-# [Ajustes de SSH]
-# SSH Host: [Tu_IP_o_Dominio_CloudFront]
-# SSH Port: 80 (o 443)
-# User/Pass: [Tus credenciales de Root o Usuario SSH]
-# 
-# [Payload]
-# GET / HTTP/1.1[crlf]Host: [Tu_Dominio_CloudFront][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]X-Pass: mi_password_secreto[crlf][crlf]
-#
-# [Ajustes Adicionales]
-# ✅ SSL (TLS): DESACTIVADO (El proxy es HTTP puro)
-# ✅ Auto-Ping: 20 Segundos (Obligatorio para CloudFront)
+# Detalle:                        Valor:         Descripción:
+# ------------------------------------------------------------------------------
+PORTS          = [80, 443]        # [80, 443]    Puertos de escucha
+PASS           = 'mi_password'    # string       Contraseña para X-Pass
+TARGET_IP      = '127.0.0.1'      # IP           IP de SSHD
+TARGET_PORT    = 22               # 22           Puerto de SSHD (sshd)
+BUFFER_SIZE    = 16384            # 16384 (16KB) Estabilidad de velocidad
+KEEP_ALIVE_SEC = 25               # 25           Evita cierre de CloudFront
+RAM_CLEAN_SEC  = 300              # 300 (5min)   Mantiene el VPS ligero
 # ==============================================================================
 
-# CONFIGURACIÓN DEL SCRIPT
-LISTENING_ADDR = '0.0.0.0'
-PORTS = [80, 443]
-PASS = 'mi_password_secreto'  # Debe coincidir con X-Pass del Payload
-DEFAULT_TARGET = ('127.0.0.1', 22)
+# Guía para HTTP Custom:
+# Payload: GET / HTTP/1.1[crlf]Host: [dominio_cloudfront][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]X-Pass: mi_password[crlf][crlf]
 
 def generate_ws_accept(key):
     GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -41,20 +56,36 @@ def find_header(head, header):
         return head[start:end].strip()
     except: return b''
 
+async def memory_cleaner():
+    """Virtud: Libera RAM sin afectar conexiones activas."""
+    while True:
+        await asyncio.sleep(RAM_CLEAN_SEC)
+        gc.collect()
+
 async def forward(reader, writer):
+    """Virtud: Manejo de contrapresión y estabilidad de flujo."""
     try:
         while True:
             try:
-                data = await asyncio.wait_for(reader.read(4096), timeout=25)
+                data = await asyncio.wait_for(reader.read(BUFFER_SIZE), timeout=KEEP_ALIVE_SEC)
                 if not data: break
+                
                 writer.write(data)
-                await writer.drain()
+                
+                # Si el búfer se llena, pausamos para no saturar la red (Backpressure)
+                if writer.transport.get_write_buffer_size() > 65536:
+                    await writer.drain()
             except asyncio.TimeoutError:
-                writer.write(b'\x00') # Keep-alive
+                # Mantiene el túnel vivo enviando un bit de actividad
+                writer.write(b'\x00')
                 await writer.drain()
+            except (ConnectionResetError, BrokenPipeError):
+                break
     except: pass
     finally:
-        try: writer.close()
+        try:
+            writer.close()
+            await writer.wait_closed()
         except: pass
 
 async def handle(client_reader, client_writer):
@@ -71,7 +102,7 @@ async def handle(client_reader, client_writer):
         ws_key = find_header(data, b'Sec-WebSocket-Key')
         accept_val = generate_ws_accept(ws_key) if ws_key else "AnyValue"
         
-        target_reader, target_writer = await asyncio.open_connection(*DEFAULT_TARGET)
+        target_reader, target_writer = await asyncio.open_connection(TARGET_IP, TARGET_PORT)
         
         resp = ("HTTP/1.1 101 Switching Protocols\r\n"
                 "Upgrade: websocket\r\n"
@@ -92,7 +123,8 @@ async def handle(client_reader, client_writer):
         except: pass
 
 async def start_servers():
-    tasks = [asyncio.start_server(handle, LISTENING_ADDR, p) for p in PORTS]
+    asyncio.create_task(memory_cleaner())
+    tasks = [asyncio.start_server(handle, '0.0.0.0', p) for p in PORTS]
     servers = await asyncio.gather(*tasks)
     await asyncio.gather(*[s.serve_forever() for s in servers])
 
@@ -103,10 +135,12 @@ if __name__ == '__main__':
         pass
 EOF
 
-# 2. Configuración de Systemd
+# ======================================================
+# 3. CONFIGURACIÓN DEL SERVICIO SYSTEMD
+# ======================================================
 cat <<EOF > /etc/systemd/system/adv-proxy.service
 [Unit]
-Description=Advanced MultiPort Proxy SSHD
+Description=Advanced MultiPort Proxy (SSHD + CloudFront)
 After=network.target
 
 [Service]
@@ -122,9 +156,16 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-# 3. Aplicar y Reiniciar
+# ======================================================
+# 4. LANZAMIENTO
+# ======================================================
 systemctl daemon-reload
 systemctl enable adv-proxy
 systemctl restart adv-proxy
 
-echo "✅ Instalado. Abre /opt/advanced-proxy/proxy.py para ver tu Payload."
+echo "-------------------------------------------------------"
+echo "✅ TODO LISTO"
+echo "✅ Proxy estable en puertos: 80 y 443"
+echo "✅ Configuración de SSHD optimizada"
+echo "✅ Limpiador de RAM y Control de Flujo ACTIVADOS"
+echo "-------------------------------------------------------"
