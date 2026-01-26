@@ -12,7 +12,7 @@ echo "--- 🛠️  INSTALACIÓN DEL LIMITADOR OPENSSH + GUARDIÁN DE DB (AlmaLin
 echo ""
 
 # --- CONFIGURACIÓN DE RUTAS ---
-LIMITADOR_DIR="/etc/limitador"
+LIMITADOR_DIR="/root"
 DB_MASTER="$LIMITADOR_DIR/usuarios.db"
 DB_LIMITER="$LIMITADOR_DIR/usuarios-limitador.db"
 DB_BACKUP="$LIMITADOR_DIR/usuarios.backup"
