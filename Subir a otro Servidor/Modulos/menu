@@ -167,14 +167,15 @@ else
 system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
 fi
 _ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
-[[ "$(cat /etc/RedLibre/Exp)" != "" ]] && _expuser=$(cat /etc/RedLibre/Exp) || _expuser="0"
+_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
+case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
 _onop="0"
 [[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) _ondrp=$(($_drp - 1)) || _ondrp="0"
 _onli=$(($_ons + $_onop + $_ondrp))
-_ram=$(printf ' %-9s' "$(free -h | grep -i mem | awk {'print $2'})")
+_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
 _usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
-_usop=$(printf '%-1s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
-_core=$(printf '%-1s' "$(grep -c cpu[0-9] /proc/stat)")
+_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
+_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
 _system=$(printf '%-14s' "$system")
 _hora=$(printf '%(%H:%M:%S)T' $(date +%s))
 _onlin=$(printf '%-5s' "$_onli")
@@ -184,12 +185,12 @@ clear
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "\033[1;32mSISTEMA            MEMORIA RAM      PROCESADOR "
-echo -e "\033[1;31mOS: \033[1;37m$_system \033[1;31mTotal:\033[1;37m$_ram \033[1;31mNúcleos: \033[1;37m$_core\033[0m"
-echo -e "\033[1;31mHora: \033[1;37m$_hora     \033[1;31mEn uso: \033[1;37m$_usor \033[1;31mEn uso: \033[1;37m$_usop\033[0m"
+echo -e "\033[1;32m  SISTEMA           MEMORIA RAM        PROCESADOR\033[0m"
+echo -e "\033[1;31m  OS: \033[1;37m$_system\033[1;31m  Total: \033[1;37m$_ram\033[1;31m   Núcleos: \033[1;37m$_core\033[0m"
+echo -e "\033[1;31m  Hora: \033[1;37m$_hora\033[1;31m  En uso: \033[1;37m$_usor\033[1;31m   En uso: \033[1;37m$_usop\033[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 [[ ! -e /tmp/att ]]  && {
-    echo -e "\033[1;32mConectados:\033[1;37m $_onlin     \033[1;31mExpirados: \033[1;37m$_userexp \033[1;33mTotal: \033[1;37m$_tuser\033[0m"
+    echo -e "\033[1;32m  Onlines: \033[1;37m$_onlin\033[1;31m    Expirados: \033[1;37m$_userexp\033[1;33m    Total: \033[1;37m$_tuser\033[0m"
     var01='\033[1;37m•'
 } || {
     echo -e "  \033[1;33m[\033[1;31m!\033[1;33m]  \033[1;32mHAY ACTUALIZACIÓN DISPONIBLE  \033[1;33m[\033[1;31m!\033[1;33m]\033[0m"
@@ -284,14 +285,15 @@ else
 system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
 fi
 _ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
-[[ "$(cat /etc/RedLibre/Exp 2>/dev/null)" != "" ]] && _expuser=$(cat /etc/RedLibre/Exp) || _expuser="0"
+_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
+case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
 _onop="0"
 [[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) && _ondrp=$(($_drp - 1)) || _ondrp="0"
 _onli=$(($_ons + $_onop + $_ondrp))
-_ram=$(printf ' %-9s' "$(free -h | grep -i mem | awk {'print $2'})")
+_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
 _usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
-_usop=$(printf '%-1s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
-_core=$(printf '%-1s' "$(grep -c cpu[0-9] /proc/stat)")
+_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
+_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
 _system=$(printf '%-14s' "$system")
 _hora=$(printf '%(%H:%M:%S)T' $(date +%s))
 _onlin=$(printf '%-5s' "$_onli")
@@ -301,23 +303,23 @@ clear
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "\033[1;32mSISTEMA            MEMORIA RAM      PROCESADOR "
-echo -e "\033[1;31mOS: \033[1;37m$_system \033[1;31mTotal:\033[1;37m$_ram \033[1;31mNúcleos: \033[1;37m$_core\033[0m"
-echo -e "\033[1;31mHora: \033[1;37m$_hora     \033[1;31mEn uso: \033[1;37m$_usor \033[1;31mEn uso: \033[1;37m$_usop\033[0m"
+echo -e "\033[1;32m  SISTEMA           MEMORIA RAM        PROCESADOR\033[0m"
+echo -e "\033[1;31m  OS: \033[1;37m$_system\033[1;31m  Total: \033[1;37m$_ram\033[1;31m   Núcleos: \033[1;37m$_core\033[0m"
+echo -e "\033[1;31m  Hora: \033[1;37m$_hora\033[1;31m  En uso: \033[1;37m$_usor\033[1;31m   En uso: \033[1;37m$_usop\033[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "\033[1;32mOnlines:\033[1;37m $_onlin     \033[1;31mExpirados: \033[1;37m$_userexp \033[1;33mTotal: \033[1;37m$_tuser\033[0m"
+echo -e "\033[1;32m  Onlines: \033[1;37m$_onlin\033[1;31m    Expirados: \033[1;37m$_userexp\033[1;33m    Total: \033[1;37m$_tuser\033[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
-echo -e "\033[1;31m[\033[1;36m01\033[1;31m] \033[1;37m• \033[1;33mCREAR USUARIO \033[1;31m             [\033[1;36m11\033[1;31m] \033[1;37m• \033[1;33mSPEEDTEST \033[1;31m
-[\033[1;36m02\033[1;31m] \033[1;37m• \033[1;33mCREAR USUARIO PRUEBA \033[1;31m     [\033[1;36m12\033[1;31m] \033[1;37m• \033[1;33mBANNER \033[1;31m
-[\033[1;36m03\033[1;31m] \033[1;37m• \033[1;33mELIMINAR USUARIO \033[1;31m          [\033[1;36m13\033[1;31m] \033[1;37m• \033[1;33mTRÁFICO \033[1;31m
-[\033[1;36m04\033[1;31m] \033[1;37m• \033[1;33mMONITOR EN LÍNEA \033[1;31m        [\033[1;36m14\033[1;31m] \033[1;37m• \033[1;33mOPTIMIZAR \033[1;31m
-[\033[1;36m05\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR FECHA \033[1;31m             [\033[1;36m15\033[1;31m] \033[1;37m• \033[1;33mBACKUP \033[1;31m
-[\033[1;36m06\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR LÍMITE \033[1;31m             [\033[1;36m16\033[1;31m] \033[1;37m• \033[1;33mLIMITADOR $stsl\033[1;31m
-[\033[1;36m07\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR CONTRASEÑA \033[1;31m       [\033[1;36m17\033[1;31m] \033[1;37m• \033[1;33mBAD VPN $stsu\033[1;31m
-[\033[1;36m08\033[1;31m] \033[1;37m• \033[1;33mELIMINAR EXPIRADOS \033[1;31m       [\033[1;36m18\033[1;31m] \033[1;37m• \033[1;33mINFO VPS \033[1;31m
-[\033[1;36m09\033[1;31m] \033[1;37m• \033[1;33mINFORME DE USUARIOS \033[1;31m      [\033[1;36m19\033[1;31m] \033[1;37m• \033[1;33mMÁS \033[1;31m>\033[1;33m>\033[1;32m>\033[0m\033[1;31m
-[\033[1;36m10\033[1;31m] \033[1;37m• \033[1;33mMODO DE CONEXIÓN \033[1;31m        [\033[1;36m00\033[1;31m] \033[1;37m• \033[1;33mSALIR \033[1;32m<\033[1;33m<\033[1;31m<\033[0m \033[0m"
+echo -e "\033[1;31m[\033[1;36m01\033[1;31m] \033[1;37m• \033[1;33mCREAR USUARIO \033[1;31m          [\033[1;36m11\033[1;31m] \033[1;37m• \033[1;33mSPEEDTEST \033[1;31m
+[\033[1;36m02\033[1;31m] \033[1;37m• \033[1;33mCREAR USUARIO PRUEBA \033[1;31m  [\033[1;36m12\033[1;31m] \033[1;37m• \033[1;33mBANNER \033[1;31m
+[\033[1;36m03\033[1;31m] \033[1;37m• \033[1;33mELIMINAR USUARIO \033[1;31m       [\033[1;36m13\033[1;31m] \033[1;37m• \033[1;33mTRÁFICO \033[1;31m
+[\033[1;36m04\033[1;31m] \033[1;37m• \033[1;33mMONITOR EN LÍNEA \033[1;31m       [\033[1;36m14\033[1;31m] \033[1;37m• \033[1;33mOPTIMIZAR \033[1;31m
+[\033[1;36m05\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR FECHA \033[1;31m            [\033[1;36m15\033[1;31m] \033[1;37m• \033[1;33mBACKUP \033[1;31m
+[\033[1;36m06\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR LÍMITE \033[1;31m            [\033[1;36m16\033[1;31m] \033[1;37m• \033[1;33mLIMITADOR $stsl\033[1;31m
+[\033[1;36m07\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR CONTRASEÑA \033[1;31m      [\033[1;36m17\033[1;31m] \033[1;37m• \033[1;33mBAD VPN $stsu\033[1;31m
+[\033[1;36m08\033[1;31m] \033[1;37m• \033[1;33mELIMINAR EXPIRADOS \033[1;31m      [\033[1;36m18\033[1;31m] \033[1;37m• \033[1;33mINFO VPS \033[1;31m
+[\033[1;36m09\033[1;31m] \033[1;37m• \033[1;33mINFORME DE USUARIOS \033[1;31m     [\033[1;36m19\033[1;31m] \033[1;37m• \033[1;33mMÁS \033[1;31m>\033[1;33m>\033[1;32m>\033[0m\033[1;31m
+[\033[1;36m10\033[1;31m] \033[1;37m• \033[1;33mMODO DE CONEXIÓN \033[1;31m       [\033[1;36m00\033[1;31m] \033[1;37m• \033[1;33mSALIR \033[1;32m<\033[1;33m<\033[1;31m<\033[0m \033[0m"
 echo ""
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""

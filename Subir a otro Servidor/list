@@ -82,6 +82,7 @@ crontab -r >/dev/null 2>&1
 	echo "* * * * * /etc/autostart"
 	echo "0 */6 * * * /bin/uexpired"
 ) | crontab -
+/bin/uexpired 2>/dev/null || true
 echo "$_lvk" | sed -n '1 p' | cut -d' ' -f2 >/bin/versao && cat /bin/versao >/home/redlibre 2>/dev/null || true
 # jq: AlmaLinux/RHEL tem nos repos; Debian pode precisar do binário
 if ! command -v jq &>/dev/null; then
