@@ -93,23 +93,67 @@ fun_attlist () {
 fun_bar 'fun_attlist'
 clear
 echo ""
-echo -e "          \033[1;33m[\033[1;31m!\033[1;33m] \033[1;32mINSTALANDO PAQUETES \033[1;33m[\033[1;31m!\033[1;33m] \033[0m"
+echo -e "          \033[1;33m[\033[1;31m!\033[1;33m] \033[1;32mVERIFICANDO DEPENDENCIAS \033[1;33m[\033[1;31m!\033[1;33m] \033[0m"
 echo ""
-echo -e "\033[1;33mAlgunos paquetes son necesarios.\033[0m"
-echo ""
-inst_pct () {
-# AlmaLinux 8/9: dnf + python3-pip; CentOS 7: yum
+
+# Verifica qué paquetes faltan (rpm -q devuelve 0 si está instalado)
+verificar_dependencias () {
+  _faltantes=()
+  for _p in "$@"; do
+    rpm -q --quiet "$_p" 2>/dev/null || _faltantes+=("$_p")
+  done
+}
+
+# Lista de paquetes requeridos según gestor
 if command -v dnf &>/dev/null; then
   _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python3-pip" "at" "perl")
-  for _prog in ${_pacotes[@]}; do dnf install -y $_prog 2>/dev/null || true; done
-  pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
 else
-  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "netstat" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python-pip" "at" "perl")
-  for _prog in ${_pacotes[@]}; do yum install -y $_prog 2>/dev/null || true; done
-  pip install speedtest-cli 2>/dev/null || pip3 install speedtest-cli 2>/dev/null || true
+  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python-pip" "at" "perl")
 fi
-}
-fun_bar 'inst_pct'
+
+verificar_dependencias "${_pacotes[@]}"
+
+if [[ ${#_faltantes[@]} -eq 0 ]]; then
+  echo -e "\033[1;32mTodas las dependencias están satisfechas. Se omite la instalación de paquetes.\033[0m"
+  echo ""
+  # speedtest-cli puede no estar en rpm; intentar solo si no está
+  if ! command -v speedtest &>/dev/null && ! python3 -c "import speedtest" 2>/dev/null; then
+    echo -e "\033[1;33mInstalando speedtest-cli (Python)...\033[0m"
+    pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
+  fi
+else
+  echo -e "\033[1;33mPaquetes necesarios. Se instalarán los que falten.\033[0m"
+  echo ""
+  inst_pct () {
+    if command -v dnf &>/dev/null; then
+      for _prog in ${_pacotes[@]}; do dnf install -y $_prog 2>/dev/null || true; done
+      pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
+    else
+      for _prog in ${_pacotes[@]}; do yum install -y $_prog 2>/dev/null || true; done
+      pip install speedtest-cli 2>/dev/null || pip3 install speedtest-cli 2>/dev/null || true
+    fi
+  }
+  fun_bar 'inst_pct'
+  # Verificar de nuevo tras la instalación
+  verificar_dependencias "${_pacotes[@]}"
+  if [[ ${#_faltantes[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "\033[1;31m════════════════════════════════════════════════════\033[0m"
+    echo -e "\033[1;31m  INFORME: DEPENDENCIAS FALTANTES\033[0m"
+    echo -e "\033[1;31m════════════════════════════════════════════════════\033[0m"
+    echo -e "\033[1;33mNo se pudieron instalar las siguientes dependencias:\033[0m"
+    echo ""
+    for _p in "${_faltantes[@]}"; do
+      echo -e "  \033[1;31m• \033[1;37m$_p\033[0m"
+    done
+    echo ""
+    echo -e "\033[1;33mInstálelas manualmente (ej.: dnf install -y <paquete> o yum install -y <paquete>)\033[0m"
+    echo -e "\033[1;33my vuelva a ejecutar este script si desea continuar.\033[0m"
+    echo -e "\033[1;31m════════════════════════════════════════════════════\033[0m"
+    echo ""
+    read -p "Presione ENTER para continuar de todos modos o Ctrl+C para salir."
+  fi
+fi
 # UFW solo en sistemas que lo usan (Debian/Ubuntu); AlmaLinux/RHEL usan firewalld
 if [[ -f /usr/sbin/ufw ]] && [[ ! -f /etc/redhat-release ]]; then
   ufw allow 443/tcp
