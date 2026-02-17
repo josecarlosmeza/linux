@@ -1,0 +1,85 @@
+#!/bin/bash
+database="/root/usuarios.db"
+
+# La función fun_drop ahora solo calcula las sesiones activas, sin imprimir 'clear' ni guardar PIDs
+fun_drop () {
+    # Encuentra el puerto de dropbear (más robusto que el original)
+    port_dropbear=$(ss -tlnp | grep dropbear | awk 'NR==1{print $4}' | awk -F: '{print $NF}')
+    
+    # Si no se encuentra el puerto, salimos de la función
+    if [ -z "$port_dropbear" ]; then
+        return
+    fi
+
+    log="/var/log/auth.log"
+    loginsukses='Password auth succeeded'
+    
+    # 1. Obtener todos los PIDs de dropbear activos en ese puerto
+    pids=$(ps ax | grep dropbear | grep " $port_dropbear" | awk -F" " '{print $1}')
+    
+    # 2. Bucle principal para extraer información de cada PID
+    for pid in $pids
+    do
+        # Encontrar la línea de login más reciente para el PID
+        login_info=$(grep "$pid" "$log" | grep "$loginsukses" | tail -n 1)
+
+        if [ -n "$login_info" ]; then
+            PID="$pid"
+            # Extracción del usuario y limpieza de comillas
+            user=$(echo "$login_info" | awk '{print $10}' | sed "s/'//g")
+            # Extracción del tiempo (mes-día, hora)
+            waktu=$(echo "$login_info" | awk '{print $1"-"$2,$3}')
+            
+            # 3. Usamos printf para un formato limpio y eficiente (reemplaza los bucles 'while')
+            printf "%-16s %-8s %-13s\n" "$user" "$PID" "$waktu"
+        fi
+    done
+}
+
+# --- Ejecución Principal Optimizado ---
+
+if [ ! -f "$database" ]; then
+	echo "Arquivo /root/usuarios.db não encontrado"
+	exit 1
+fi
+
+while true
+do
+	clear
+	echo -e "\E[42;1;37m               LIMITER DROPBEAR                \E[0m"
+    echo -e "\E[42;1;37m Ususario                       Conexao/Limite \E[0m"
+    
+    # OPTIMIZACIÓN 1: Llamar a fun_drop SOLO UNA VEZ por ciclo
+    ALL_SESSIONS=$(fun_drop)
+
+    while read usline
+    do
+		user="$(echo $usline | cut -d' ' -f1)"
+		s2ssh="$(echo $usline | cut -d' ' -f2)"
+        
+        # 1. Filtramos las sesiones del usuario de la lista pre-calculada (mucho más rápido)
+		USER_SESSIONS=$(echo "$ALL_SESSIONS" | grep -w "$user")
+        s3drop="$(echo "$USER_SESSIONS" | wc -l)" # Contamos las sesiones del usuario
+
+		if [ -z "$user" ] ; then
+		    echo "" > /dev/null
+		else
+		    tput setaf 3 ; tput bold ; printf '  %-35s%s\n' "$user" "$s3drop/$s2ssh"; tput sgr0
+            
+		    if [ "$s3drop" -gt "$s2ssh" ]; then
+		        echo -e "\E[41;1;37m Usuário desconectado por ultrapassar o limite! \E[0m"
+
+                # OPTIMIZACIÓN 2: Evitar archivos temporales. Extraemos y matamos directamente
+                # Se extraen los PIDs que están por encima del límite (desde el segundo PID)
+                PIDS_TO_KILL=$(echo "$USER_SESSIONS" | awk '{print $2}' | sed -n "2,${s3drop}p")
+                
+                # Leemos los PIDs directamente de la variable y los matamos
+		        while read pid_to_kill
+		        do
+		           kill "$pid_to_kill" 2>/dev/null
+		        done <<< "$PIDS_TO_KILL"
+		    fi
+		fi
+     done < "$database"
+     sleep 6
+done
