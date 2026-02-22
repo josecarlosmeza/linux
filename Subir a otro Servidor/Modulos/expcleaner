@@ -3,6 +3,8 @@ datenow=$(date +%s)
 remove_ovp () {
 if [[ -e /etc/debian_version ]]; then
 	GROUPNAME=nogroup
+else
+	GROUPNAME=nobody
 fi
 user="$1"
 cd /etc/openvpn/easy-rsa/
@@ -17,22 +19,26 @@ chown nobody:$GROUPNAME /etc/openvpn/crl.pem
 [[ -e $HOME/$user.ovpn ]] && rm $HOME/$user.ovpn > /dev/null 2>&1
 [[ -e /var/www/html/openvpn/$user.zip ]] && rm /var/www/html/openvpn/$user.zip > /dev/null 2>&1
 } > /dev/null 2>&1
-echo -e "\E[44;1;37m Usuario          Data         Estado         Ação   \E[0m"
+echo -e "\E[44;1;37m Usuario          Fecha         Estado         Acción   \E[0m"
 echo ""
-for user in $(awk -F: '{print $1}' /etc/passwd); do
-	expdate=$(chage -l $user|awk -F: '/Account expires/{print $2}')
-	echo $expdate|grep -q never && continue
-	datanormal=$(date -d"$expdate" '+%d/%m/%Y')
-	tput setaf 3 ; tput bold ; printf '%-15s%-17s%s' $user $datanormal ; tput sgr0
-	expsec=$(date +%s --date="$expdate")
-	diff=$(echo $datenow - $expsec|bc -l)
+# Solo usuarios normales (UID >= 1000), nunca root ni nobody
+for user in $(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody); do
+	[[ "$user" == "root" ]] && continue
+	expdate=$(LANG=en_US.UTF-8 chage -l "$user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	[[ -z "$expdate" || "$expdate" == "never" ]] && continue
+	datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
+	[[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
+	tput setaf 3 ; tput bold ; printf '%-15s%-17s%s' "$user" "$datanormal" ; tput sgr0
+	expsec=$(date +%s --date="$expdate" 2>/dev/null || date +%s -d "$expdate" 2>/dev/null)
+	[[ -z "$expsec" ]] && echo " ERROR (fecha)" && continue
+	diff=$(echo "$datenow - $expsec" | bc -l 2>/dev/null)
 	tput setaf 2 ; tput bold
-	echo $diff|grep -q ^\- && echo "VALIDO   NAO REMOVIDO" && continue
+	echo "$diff" | grep -q '^\-' && echo "VÁLIDO   NO REMOVIDO" && continue
 	tput setaf 1 ; tput bold
-	echo "VENCEU   FOI REMOVIDO"
-	pkill -f $user
-	userdel --force $user
-	grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
+	echo "EXPIRADO   ELIMINADO"
+	pkill -u "$user" 2>/dev/null || true
+	userdel --force "$user" 2>/dev/null || true
+	[[ -f /root/usuarios.db ]] && grep -v "^${user}[[:space:]]" /root/usuarios.db > /tmp/ph 2>/dev/null && mv /tmp/ph /root/usuarios.db
 	if [[ -e /etc/openvpn/server.conf ]]; then
 		remove_ovp $user
 	fi
