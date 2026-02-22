@@ -4,7 +4,7 @@
 #   DATA ATT:   15 de Jul 2020
 #	REDLIBRE
 #====================================================
-_lvk=$(wget -qO- https://raw.githubusercontent.com/AAAAAEXQOSyIpN2JZ0ehUQ/SSHPLUS-MANAGER-FREE/master/Install/versao)
+_lvk=$(wget -qO- https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/version)
 IP=$(wget -qO- ipv4.icanhazip.com)
 IP2=$(wget -qO- http://whatismyip.akamai.com/)
 [[ "$IP" != "$IP2" ]] && ipdovps="$IP2" || ipdovps="$IP"
@@ -83,7 +83,7 @@ crontab -r >/dev/null 2>&1
 	echo "0 */6 * * * /bin/uexpired"
 ) | crontab -
 /bin/uexpired 2>/dev/null || true
-echo "$_lvk" | sed -n '1 p' | cut -d' ' -f2 >/bin/versao && cat /bin/versao >/home/redlibre 2>/dev/null || true
+echo "$_lvk" | sed -n '1 p' | tr -d '[:space:]' | head -1 >/bin/version && cat /bin/version >/home/redlibre 2>/dev/null || true
 # jq: AlmaLinux/RHEL tem nos repos; Debian pode precisar do binário
 if ! command -v jq &>/dev/null; then
   (command -v dnf &>/dev/null && dnf install -y jq 2>/dev/null) || (command -v yum &>/dev/null && yum install -y jq 2>/dev/null) || (wget -q https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64 -O /tmp/jq-linux64 2>/dev/null && chmod +x /tmp/jq-linux64 && mv /tmp/jq-linux64 /usr/local/bin/jq 2>/dev/null)

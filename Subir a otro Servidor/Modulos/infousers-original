@@ -2,7 +2,7 @@
 clear
 echo -e "\E[44;1;37m Usuario         Contraseña       Limite      Valides \E[0m"
 echo ""
-[[ ! -e /bin/versao ]] && rm -rf /bin/menu
+[[ ! -e /bin/version ]] && rm -rf /bin/menu
 for users in `awk -F : '$3 > 900 { print $1 }' /etc/passwd |sort |grep -v "nobody" |grep -vi polkitd |grep -vi system-`
 do
 if [[ $(grep -cw $users $HOME/usuarios.db) == "1" ]]; then

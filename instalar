@@ -56,8 +56,8 @@ rm -f $_Ink/list > /dev/null 2>&1
 wget -q -P $_Ink https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/list 2>/dev/null
 chmod +x $_Ink/list 2>/dev/null
 echo "/bin/menu" > /bin/h && chmod +x /bin/h > /dev/null 2>&1
-rm -f versao* > /dev/null 2>&1
-wget -q https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/versao -O versao 2>/dev/null
+rm -f version* > /dev/null 2>&1
+wget -q https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/version -O version 2>/dev/null
 #-----------------------------------------------------------------------------------------------------------------
 sleep 1s
 echo ""
