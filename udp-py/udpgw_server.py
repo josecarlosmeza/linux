@@ -289,7 +289,6 @@ class UdpgwHandler:
                     if pf.relay_thread and pf.relay_thread.is_alive():
                         pf.relay_thread.join(timeout=2)
                 self.port_forwards.clear()
-        finally:
             try:
                 self.client_conn.close()
             except OSError:
