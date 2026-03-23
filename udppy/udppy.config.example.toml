@@ -40,6 +40,12 @@ no_linux_tune = false
 # Paquetes:  sudo dnf install -y python3 python3-pip
 # Recomendado: pip install uvloop  (mejor rendimiento; udppy lo usa por defecto en Linux)
 #
+# Instalación desde el repositorio GitHub (descarga udppy y luego pip + opcional systemd):
+#   sudo python3 install.py --install-from-github --dest /opt/udppy --install-systemd --enable-systemd
+# O script mínimo bootstrap.sh (curl del script, luego sudo ./bootstrap.sh ...):
+#   curl -fsSL -o /tmp/udppy-bootstrap.sh https://raw.githubusercontent.com/josecarlosmeza/linux/main/udppy/bootstrap.sh
+#   chmod +x /tmp/udppy-bootstrap.sh && sudo /tmp/udppy-bootstrap.sh --install-systemd --enable-systemd
+#
 # Puerto TCP del listener (7300 por defecto) en firewalld:
 #   sudo firewall-cmd --permanent --add-port=7300/tcp
 #   sudo firewall-cmd --reload

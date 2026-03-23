@@ -14,23 +14,104 @@ systemd (solo Linux, como root):
   sudo python3 install.py --install-systemd --enable-systemd
   sudo python3 install.py --install-systemd --systemd-listen 0.0.0.0:7400 --systemd-dns 8.8.8.8:53
   sudo python3 install.py --remove-systemd
+
+Descarga desde GitHub (rama main, carpeta udppy/) y luego instala en ese directorio:
+  python3 install.py --install-from-github --dest /opt/udppy
+  sudo python3 install.py --install-from-github --dest /opt/udppy --install-systemd --enable-systemd
+
+Script mínimo (bash; descarga install.py y delega aquí):
+  curl -fsSL -o /tmp/udppy-bootstrap.sh \\
+    https://raw.githubusercontent.com/josecarlosmeza/linux/main/udppy/bootstrap.sh
+  chmod +x /tmp/udppy-bootstrap.sh
+  sudo /tmp/udppy-bootstrap.sh --install-systemd --enable-systemd
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 MIN_PY = (3, 9)
+
+# Rama main del repositorio público (contenido en subcarpeta udppy/)
+GITHUB_REPO_ZIP = (
+    "https://github.com/josecarlosmeza/linux/archive/refs/heads/main.zip"
+)
 
 
 def _root() -> Path:
     return Path(__file__).resolve().parent
+
+
+def download_udppy_from_github(
+    dest: Path,
+    *,
+    zip_url: str,
+    force: bool,
+) -> bool:
+    """
+    Descarga el ZIP de la rama main y extrae solo la carpeta udppy/ en dest.
+    """
+    marker = dest / "udppy_server.py"
+    if marker.is_file() and not force:
+        _fail(
+            f"Ya existe {marker}; use --force para volver a descargar o borre {dest}"
+        )
+        return False
+
+    print(f"--- Descarga desde GitHub ---\n\n  URL: {zip_url}\n")
+    try:
+        with urlopen(zip_url, timeout=120) as resp:
+            data = resp.read()
+    except URLError as e:
+        _fail(f"No se pudo descargar el repositorio: {e}")
+        return False
+
+    try:
+        if dest.exists() and force:
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            prefix: str | None = None
+            for name in zf.namelist():
+                if name.endswith("udppy/install.py"):
+                    prefix = name[: -len("install.py")]
+                    break
+            if not prefix:
+                _fail("El ZIP no contiene udppy/install.py (¿rama o repo distinto?)")
+                return False
+
+            for name in zf.namelist():
+                if name.endswith("/") or not name.startswith(prefix):
+                    continue
+                rel = name[len(prefix) :]
+                if not rel or rel.startswith(".."):
+                    continue
+                out = dest / rel
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(name) as src, open(out, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+    except OSError as e:
+        _fail(f"Extracción en {dest}: {e}")
+        return False
+
+    if not (dest / "install.py").is_file():
+        _fail(f"Extracción incompleta: falta {dest / 'install.py'}")
+        return False
+
+    _ok(f"udppy descargado en {dest.resolve()}")
+    return True
 
 
 def _venv_python(root: Path) -> Path:
@@ -326,6 +407,35 @@ def remove_systemd() -> bool:
     return True
 
 
+def _argv_without_github_flags(argv: list[str]) -> list[str]:
+    """Quita --install-from-github, --dest, --github-zip-url, --force y sus valores."""
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--install-from-github":
+            i += 1
+            continue
+        if a == "--force":
+            i += 1
+            continue
+        if a == "--dest":
+            i += 2
+            continue
+        if a.startswith("--dest="):
+            i += 1
+            continue
+        if a == "--github-zip-url":
+            i += 2
+            continue
+        if a.startswith("--github-zip-url="):
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
 def maybe_reexec_into_venv(root: Path) -> None:
     """Si --venv y aún no estamos en .venv, crear entorno y re-ejecutar este script."""
     if _running_from_project_venv(root):
@@ -409,7 +519,48 @@ def main() -> int:
         action="store_true",
         help="En la unidad systemd, añadir --no-uvloop (por defecto se usa uvloop en Linux si está instalado)",
     )
+    ap.add_argument(
+        "--install-from-github",
+        action="store_true",
+        help=(
+            "Descargar udppy desde GitHub (josecarlosmeza/linux, rama main) y continuar "
+            "la instalación en --dest"
+        ),
+    )
+    ap.add_argument(
+        "--dest",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Con --install-from-github: directorio donde extraer (default: ./udppy en el cwd actual)"
+        ),
+    )
+    ap.add_argument(
+        "--github-zip-url",
+        type=str,
+        default=GITHUB_REPO_ZIP,
+        metavar="URL",
+        help=f"URL del ZIP de la rama (default: repositorio público en GitHub)",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Con --install-from-github: borrar dest y volver a descargar si ya existía",
+    )
     args = ap.parse_args()
+
+    if args.install_from_github:
+        dest = (args.dest if args.dest is not None else Path.cwd() / "udppy").resolve()
+        if not download_udppy_from_github(
+            dest, zip_url=args.github_zip_url, force=args.force
+        ):
+            return 1
+        child = [sys.executable, str(dest / "install.py")] + _argv_without_github_flags(
+            sys.argv[1:]
+        )
+        os.execv(child[0], child)
+
     root = _root()
 
     print("=== udppy — instalación y verificación ===\n")
