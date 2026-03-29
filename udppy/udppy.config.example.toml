@@ -1,0 +1,89 @@
+# =============================================================================
+# udppy — plantilla de configuración
+# Copie este archivo (p. ej. a udppy.toml) y ajuste los valores.
+# El servidor lee opciones por línea de comandos; use los mismos valores
+# al invocar: python udppy_server.py ...
+# =============================================================================
+
+[server]
+# Dirección TCP donde escucha (IPv4 a.b.c.d:puerto o [IPv6]:puerto).
+listen_addr = "0.0.0.0:7300"
+
+# Tamaño máximo del payload UDP (equivalente a --udp-mtu en el daemon udpgw de badvpn).
+udp_mtu = 65520
+
+# Máximo de conexiones UDP lógicas por cliente TCP.
+max_connections = 256
+
+# Cola del socket de escucha TCP (en Linux suele subirse con muchos clientes).
+backlog = 256
+
+# Reenvío DNS cuando el cliente marca el flag DNS (HOST:PUERTO).
+# Recomendado en Windows; en Linux también si no hay resolv.conf usable.
+# Deje vacío o comente la clave si no desea reenvío DNS explícito.
+# dns = "8.8.8.8:53"
+
+[logging]
+# true = registro detallado (-v / --verbose).
+verbose = false
+
+[linux]
+# true = desactivar TCP_NODELAY, buffers, etc. (solo depuración; --no-linux-tune).
+no_linux_tune = false
+
+# En Linux, uvloop se usa por defecto si está instalado (pip install uvloop).
+# Para forzar asyncio estándar: --no-uvloop
+
+# -----------------------------------------------------------------------------
+# AlmaLinux 8/9 (y RHEL compatibles)
+# -----------------------------------------------------------------------------
+# Paquetes:  sudo dnf install -y python3 python3-pip
+# Recomendado: pip install uvloop  (mejor rendimiento; udppy lo usa por defecto en Linux)
+#
+# Instalación desde el repositorio GitHub (descarga udppy y luego pip + opcional systemd):
+#   sudo python3 install.py --install-from-github --dest /opt/udppy --install-systemd --enable-systemd
+# O script mínimo bootstrap.sh (curl del script, luego sudo ./bootstrap.sh ...):
+#   curl -fsSL -o /tmp/udppy-bootstrap.sh https://raw.githubusercontent.com/josecarlosmeza/linux/main/udppy/bootstrap.sh
+#   chmod +x /tmp/udppy-bootstrap.sh && sudo /tmp/udppy-bootstrap.sh --install-systemd --enable-systemd
+#
+# Puerto TCP del listener (7300 por defecto) en firewalld:
+#   sudo firewall-cmd --permanent --add-port=7300/tcp
+#   sudo firewall-cmd --reload
+#
+# DNS para --dns: coja el resolver real del servidor, p. ej.:
+#   grep ^nameserver /etc/resolv.conf | head -1
+#   resolvectl status   # ver "DNS Servers" en la interfaz activa
+# Si el primero es 127.0.0.1, use --dns 127.0.0.1:53 (o el puerto que muestre resolvectl).
+#
+# linux_tune queda activo por defecto (TCP_NODELAY, buffers); solo use
+# no_linux_tune = true en depuración.
+#
+# Servicio systemd (nombre: udppy-server). Recomendado: generar la unidad desde el proyecto:
+#   cd /ruta/al/proyecto/udppy
+#   sudo python3 install.py --install-systemd [--enable-systemd] [--systemd-dns 8.8.8.8:53]
+#   systemctl status udppy-server
+# Comandos útiles: systemctl start|stop|restart udppy-server ; journalctl -u udppy-server -f
+# Para desinstalar la unidad: sudo python3 install.py --remove-systemd
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Ejemplo de línea de comandos equivalente (ajuste rutas y opciones):
+#
+#   # Windows (PowerShell)
+#   python udppy_server.py ^
+#     --listen-addr 0.0.0.0:7300 ^
+#     --udp-mtu 65520 ^
+#     --max-connections 256 ^
+#     --backlog 256 ^
+#     --dns 8.8.8.8:53
+#
+#   # AlmaLinux / bash
+#   python3 udppy_server.py \
+#     --listen-addr 0.0.0.0:7300 \
+#     --udp-mtu 65520 \
+#     --max-connections 256 \
+#     --backlog 256 \
+#     --dns 8.8.8.8:53
+#
+# Opcionales: -v  |  --no-linux-tune  |  --no-uvloop
+# -----------------------------------------------------------------------------
