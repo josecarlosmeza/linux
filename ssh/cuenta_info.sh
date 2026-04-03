@@ -1,8 +1,8 @@
 #!/bin/bash
 # Información de cuenta al conectar por SSH (compatible con HTTP Custom: salida texto plano).
 # Uso:
-#   - Ejecutable: /ruta/cuenta_info.sh
-#   - En el servidor: enlace en /etc/profile.d/ (solo sesiones login) o al final de ~/.bash_profile
+#   - Directo o desde cuenta-info-ssh-pam.sh (PAM pam_exec): sirve sin TTY (VPN / HTTP Custom).
+#   - Opcional: ~/.bash_profile para sesiones interactivas (si no usas PAM).
 #
 # Variables opcionales:
 #   SSH_CUENTA_INFO_COLOR=1  — colores si la salida es una TTY
@@ -13,6 +13,10 @@ if [[ "${SSH_CUENTA_INFO_QUIET:-0}" == "1" ]]; then
 fi
 
 _u="${USER:-$(id -un)}"
+# pam_exec (sshd) ejecuta como root; el usuario de la sesión viene en PAM_USER
+if [[ "$_u" == "root" && -n "${PAM_USER:-}" ]]; then
+  _u="$PAM_USER"
+fi
 [[ -z "$_u" || "$_u" == "root" ]] && { [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0 || exit 0; }
 
 _db="/root/usuarios.db"
