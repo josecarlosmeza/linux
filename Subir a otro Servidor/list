@@ -38,7 +38,7 @@ echo "PasswordAuthentication yes" >>/etc/ssh/sshd_config
 _dir1='/bin'
 _dir2='/etc/RedLibre'
 rm -f $_dir2/ShellBot.sh $_dir2/cabecalho $_dir2/open.py $_dir2/proxy.py >/dev/null 2>&1
-_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "blockt" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py")
+_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py")
 for _arq in ${_mdls[@]}; do
 	[[ -e $_dir1/$_arq ]] && rm $_dir1/$_arq >/dev/null 2>&1
 	wget -c -P $_dir1 https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq
@@ -80,8 +80,23 @@ crontab -r >/dev/null 2>&1
 	echo "@daily /bin/verifatt"
 	echo "@reboot /etc/autostart"
 	echo "* * * * * /etc/autostart"
-	echo "0 */6 * * * /bin/uexpired"
 ) | crontab -
+# uexpired: preferir systemd.timer (menos invasivo que PAM); fallback cron si no hay systemd o falla la descarga
+_UE_SVC="https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/systemd/redlibre-uexpired.service"
+_UE_TMR="https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/systemd/redlibre-uexpired.timer"
+if command -v systemctl &>/dev/null; then
+	wget -q -O /etc/systemd/system/redlibre-uexpired.service "$_UE_SVC" 2>/dev/null || true
+	wget -q -O /etc/systemd/system/redlibre-uexpired.timer "$_UE_TMR" 2>/dev/null || true
+	if [[ -s /etc/systemd/system/redlibre-uexpired.service ]] && [[ -s /etc/systemd/system/redlibre-uexpired.timer ]]; then
+		systemctl daemon-reload 2>/dev/null || true
+		systemctl enable redlibre-uexpired.timer 2>/dev/null || true
+		systemctl start redlibre-uexpired.timer 2>/dev/null || true
+	else
+		( crontab -l 2>/dev/null ; echo "0 */6 * * * /bin/uexpired" ) | crontab -
+	fi
+else
+	( crontab -l 2>/dev/null ; echo "0 */6 * * * /bin/uexpired" ) | crontab -
+fi
 /bin/uexpired 2>/dev/null || true
 echo "$_lvk" | sed -n '1 p' | tr -d '[:space:]' | head -1 >/bin/version && cat /bin/version >/home/redlibre 2>/dev/null || true
 # jq: AlmaLinux/RHEL tem nos repos; Debian pode precisar do binário
