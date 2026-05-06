@@ -106,9 +106,9 @@ verificar_dependencias () {
 
 # Lista de paquetes requeridos según gestor
 if command -v dnf &>/dev/null; then
-  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python3-pip" "at" "perl")
+  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python3-pip" "python39" "python39-pip" "at" "perl")
 else
-  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python-pip" "at" "perl")
+  _pacotes=("bc" "screen" "nano" "unzip" "lsof" "net-tools" "dos2unix" "nload" "jq" "curl" "figlet" "python3" "python-pip" "python39" "python39-pip" "at" "perl")
 fi
 
 verificar_dependencias "${_pacotes[@]}"
@@ -116,21 +116,14 @@ verificar_dependencias "${_pacotes[@]}"
 if [[ ${#_faltantes[@]} -eq 0 ]]; then
   echo -e "\033[1;32mTodas las dependencias están satisfechas. Se omite la instalación de paquetes.\033[0m"
   echo ""
-  # speedtest-cli puede no estar en rpm; intentar solo si no está
-  if ! command -v speedtest &>/dev/null && ! python3 -c "import speedtest" 2>/dev/null; then
-    echo -e "\033[1;33mInstalando speedtest-cli (Python)...\033[0m"
-    pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
-  fi
 else
   echo -e "\033[1;33mPaquetes necesarios. Se instalarán los que falten.\033[0m"
   echo ""
   inst_pct () {
     if command -v dnf &>/dev/null; then
       for _prog in ${_pacotes[@]}; do dnf install -y $_prog 2>/dev/null || true; done
-      pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
     else
       for _prog in ${_pacotes[@]}; do yum install -y $_prog 2>/dev/null || true; done
-      pip install speedtest-cli 2>/dev/null || pip3 install speedtest-cli 2>/dev/null || true
     fi
   }
   fun_bar 'inst_pct'
@@ -154,6 +147,26 @@ else
     read -p "Presione ENTER para continuar de todos modos o Ctrl+C para salir."
   fi
 fi
+
+# Python 3.9 como predeterminado para python3 / pip3 (RHEL, AlmaLinux, CentOS Stream con alternatives)
+_fijar_python39_predeterminado () {
+  [[ -x /usr/bin/python3.9 ]] || return 0
+  command -v alternatives &>/dev/null || return 0
+  alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 100 >/dev/null 2>&1 || true
+  alternatives --set python3 /usr/bin/python3.9 >/dev/null 2>&1 || true
+  if [[ -x /usr/bin/pip3.9 ]]; then
+    alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.9 100 >/dev/null 2>&1 || true
+    alternatives --set pip3 /usr/bin/pip3.9 >/dev/null 2>&1 || true
+  fi
+}
+_fijar_python39_predeterminado
+
+# speedtest-cli no suele venir en rpm; instalar con pip tras dejar python3 → 3.9
+if ! command -v speedtest &>/dev/null && ! python3 -c "import speedtest" 2>/dev/null; then
+  echo -e "\033[1;33mInstalando speedtest-cli (Python)...\033[0m"
+  pip3 install speedtest-cli 2>/dev/null || python3 -m pip install speedtest-cli 2>/dev/null || true
+fi
+
 # UFW solo en sistemas que lo usan (Debian/Ubuntu); AlmaLinux/RHEL usan firewalld
 if [[ -f /usr/sbin/ufw ]] && [[ ! -f /etc/redhat-release ]]; then
   ufw allow 443/tcp
