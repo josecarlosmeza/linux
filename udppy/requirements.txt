@@ -1,0 +1,3 @@
+# udppy: el servidor usa solo la biblioteca estándar de Python (3.9+).
+# Opcional en Linux: bucle asyncio más rápido (también se puede: pip install uvloop)
+uvloop>=0.17.0; sys_platform == "linux" and platform_python_implementation != "PyPy"
