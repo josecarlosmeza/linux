@@ -1,0 +1,11 @@
+[Unit]
+Description=RedLibre — comprobar usuarios expirados cada 6 horas (equiv. cron 0 */6 * * *)
+
+[Timer]
+# Misma cadencia que el antiguo cron: minuto 0 de cada 6 horas (00, 06, 12, 18)
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,152 @@
+#!/bin/bash
+# Script de creación de usuario de prueba optimizado para AlmaLinux/RHEL 8 y 9
+
+# --- CONFIGURACIÓN Y CHEQUEO INICIAL ---
+IP=$(cat /etc/IP 2>/dev/null || echo "IP_NO_ENCONTRADA")
+TEST_DIR="/etc/RedLibre/userteste"
+DB_FILE="/root/usuarios.db"
+PASS_DIR="/etc/RedLibre/senha"
+NOLOGIN_SHELL="/usr/sbin/nologin" # Ruta estándar para RHEL/AlmaLinux 8 y 9
+
+# Crear directorios necesarios
+mkdir -p "$TEST_DIR" "$PASS_DIR"
+
+# --- FUNCIÓN DE SALIDA DE ERROR ---
+error_exit() {
+    echo ""
+    tput setaf 7 ; tput setab 1 ; tput bold
+    echo "" ; echo "ERROR: $1" ; echo ""
+    tput sgr0
+    # Limpiar usuario si se creó pero la programación falló (por seguridad)
+    if id -u "$nome" &>/dev/null; then
+        userdel --force "$nome" > /dev/null 2>&1
+        rm -f "$PASS_DIR/$nome" "$DB_FILE" > /dev/null 2>&1
+    fi
+    exit 1
+}
+
+# --- VALIDACIÓN DE REQUISITOS (atd) ---
+# Comprueba y activa atd, esencial para la programación de la eliminación
+if ! systemctl is-active --quiet atd; then
+    echo -e "\033[1;33mADVERTENCIA: El servicio 'atd' no está activo. Intentando habilitar...\033[0m"
+    if ! systemctl enable --now atd > /dev/null 2>&1; then
+        error_exit "El servicio 'atd' (programador de tareas) no está activo ni pudo ser iniciado. Ejecuta: dnf install at -y && systemctl enable --now atd"
+    else
+        echo -e "\033[1;32m'atd' habilitado y activo correctamente.\033[0m"
+    fi
+fi
+# Comprueba que la shell de no login exista
+if [[ ! -x "$NOLOGIN_SHELL" ]]; then
+    error_exit "El shell $NOLOGIN_SHELL no existe o no es ejecutable. Revisar la instalación del sistema."
+fi
+
+
+# --- VISUALIZACIÓN DE ESTADO ---
+clear
+tput setaf 7 ; tput setab 4 ; tput bold
+printf '%30s%s%-15s\n' "Crear usuario de prueba"
+tput sgr0
+echo ""
+
+# Comprueba si hay scripts de eliminación activos
+if [ "$(find "$TEST_DIR" -maxdepth 1 -name "*.sh" -print -quit)" ]; then
+    echo -e "\033[1;32m¡Usuario de prueba ACTIVO!\033[1;37m"
+else
+    echo -e "\033[1;31mNenhum test ativo!\033[0m"
+fi
+echo ""
+
+# Lista usuarios de prueba activos
+echo "Usuarios de prueba Activos:"
+for testeson in $(ls "$TEST_DIR" 2>/dev/null | sort | sed 's/\.sh$//g'); do
+    echo "$testeson"
+done
+echo ""
+
+# --- ENTRADA DE DATOS Y VALIDACIÓN OPTIMIZADA ---
+
+# 1. Nombre de Usuario
+echo -ne "\033[1;32mNombre del Usuario\033[1;37m: " ; read nome
+[[ -z "$nome" ]] && error_exit "Nombre vacío o invalido."
+# Comprobar si el usuario existe usando 'id -u'
+if id -u "$nome" &>/dev/null; then
+    error_exit "Este usuário ya existe."
+fi
+
+# 2. Contraseña
+echo -ne "\033[1;32mSenha\033[1;37m: " ; read pass
+[[ -z "$pass" ]] && error_exit "Contraseña vacía o invalida."
+
+# 3. Límite (Validación numérica)
+echo -ne "\033[1;32mLimite\033[1;37m: " ; read limit
+if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
+    error_exit "Limite invalido. Debe ser um número entero positivo."
+fi
+
+# 4. Tiempo de Validez (Minutos, Validación numérica)
+echo -ne "\033[1;32mMinutos \033[1;33m(\033[1;31mEx: \033[1;37m60\033[1;33m)\033[1;37m: " ; read u_temp
+if ! [[ "$u_temp" =~ ^[1-9][0-9]*$ ]]; then
+    error_exit "Tiempo de validez invalido. Debe ser um número intero positivo."
+fi
+
+# --- CREACIÓN Y CONFIGURACIÓN DEL USUARIO ---
+# Uso de /usr/sbin/nologin (ajustado para RHEL/AlmaLinux 8/9)
+if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
+    error_exit "Falla al crear usuario en el sistema."
+fi
+
+# Establecer contraseña usando chpasswd
+echo "$nome:$pass" | chpasswd
+
+# Guardar datos en las bases de datos del script
+echo "$pass" > "$PASS_DIR/$nome"
+echo "$nome $limit" >> "$DB_FILE"
+
+# --- CREACIÓN Y PROGRAMACIÓN DEL SCRIPT DE ELIMINACIÓN (AT) ---
+DELETE_SCRIPT="$TEST_DIR/$nome.sh"
+
+cat << EOF > "$DELETE_SCRIPT"
+#!/bin/bash
+# Script de auto-destruição para o usuário teste '$nome'
+
+# 1. Matar todas las sesiones activas del usuario (pkill -u es más seguro)
+pkill -u "$nome"
+
+# 2. Eliminar el usuario del sistema
+userdel --force "$nome" > /dev/null 2>&1
+
+# 3. Eliminar la entrada del usuario de la base de datos de límites (con sed)
+sed -i.bak '/^'"$nome"'[[:space:]]/d' "$DB_FILE" > /dev/null 2>&1
+
+# 4. Eliminar el archivo de contraseña y el script de auto-eliminación
+rm -f "$PASS_DIR/$nome" "$DELETE_SCRIPT" > /dev/null 2>&1
+
+exit
+EOF
+
+# Asignar permisos y programar con 'at'
+chmod 700 "$DELETE_SCRIPT"
+at_output=$(at -f "$DELETE_SCRIPT" "now + $u_temp min" 2>&1)
+
+# Verificación de que 'at' se programó correctamente
+if [[ $? -ne 0 ]]; then
+    # Si falla, se muestra el error de 'at' y se sale.
+    error_exit "Falha ao programar a eliminação automática (at). Erro: $at_output. Asegurese que el servicio 'atd' esté activo."
+fi
+
+# --- SALIDA FINAL ---
+clear
+echo -e "\E[44;1;37m     Usuario de prueba creado   \E[0m"
+echo ""
+echo -e "\033[1;32mIP:\033[1;37m $IP"
+echo -e "\033[1;32mUsuario:\033[1;37m $nome"
+echo -e "\033[1;32mContraseña:\033[1;37m $pass"
+echo -e "\033[1;32mLimite:\033[1;37m $limit"
+echo -e "\033[1;32mValido:\033[1;37m $u_temp Minutos"
+echo ""
+# Línea corregida al formato usuario:contraseña (todo en blanco brillante)
+echo -e "\033[1;37m$nome:$pass\033[0m"
+echo ""
+echo -e "\033[1;33mTranscurrido el tiempo definido del usuario"
+echo -e "\033[1;32m$nome \033[1;33msera desconectado y borrado.\033[0m"
+exit

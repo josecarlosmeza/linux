@@ -1,0 +1,308 @@
+import socket, threading, select, signal, sys, time, getopt
+
+# =================================================================
+# CONFIGURACIÓN (CONST)
+# =================================================================
+
+# Listen
+LISTENING_ADDR = '0.0.0.0'
+# Si no se pasan argumentos, usa 700. La lógica de args se moverá al final.
+if len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+    LISTENING_PORT = sys.argv[1]
+else:
+    LISTENING_PORT = 80 # 
+
+# Contraseña (se mantiene como cadena)
+PASS = ''
+
+# CONSTANTES
+BUFLEN = 4096 * 4 # 
+TIMEOUT = 60 # 
+DEFAULT_HOST = '127.0.0.1:22' # 
+
+# RESPUESTA (DEBE SER UN OBJETO BYTES EN PYTHON 3)
+# Se codifica la cadena de respuesta HTTP
+RESPONSE_STR = 'HTTP/1.1 101 <b><font color="green">Contacto: 3794776469</font></b>\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: foo\r\n\r\n'
+RESPONSE = RESPONSE_STR.encode('latin-1') # Se usa latin-1 para preservar la compatibilidad con códigos no ASCII si los hubiera.
+
+# =================================================================
+# CLASES Y FUNCIONES (AJUSTES PARA PYTHON 3)
+# =================================================================
+
+class Server(threading.Thread): # 
+    def __init__(self, host, port):
+        threading.Thread.__init__(self)
+        self.running = False # 
+        self.host = host # 
+        self.port = port # 
+        self.threads = [] # 
+        self.threadsLock = threading.Lock() # [cite: 4]
+        self.logLock = threading.Lock() # [cite: 4]
+
+    def run(self): # [cite: 4]
+        self.soc = socket.socket(socket.AF_INET) # [cite: 4]
+        self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # [cite: 4]
+        self.soc.settimeout(2) # [cite: 4]
+        intport = int(self.port) # [cite: 4]
+        self.soc.bind((self.host, intport)) # [cite: 4]
+        self.soc.listen(0) # [cite: 4]
+        self.running = True # [cite: 4]
+
+        try:
+            while self.running: # [cite: 5]
+                try:
+                    c, addr = self.soc.accept() # [cite: 5]
+                    c.setblocking(1) # [cite: 5]
+                except socket.timeout:
+                    continue # [cite: 6]
+
+                conn = ConnectionHandler(c, self, addr) # [cite: 6]
+                conn.start() # [cite: 6]
+                self.addConn(conn) # [cite: 6]
+        finally:
+            self.running = False # [cite: 6]
+            self.soc.close() # [cite: 6]
+
+    def printLog(self, log): # [cite: 7]
+        self.logLock.acquire() # [cite: 7]
+        # CAMBIO PYTHON 3: print es una función
+        print(log) 
+        self.logLock.release() # [cite: 7]
+
+    def addConn(self, conn): # [cite: 7]
+        try:
+            self.threadsLock.acquire() # [cite: 7]
+            if self.running: # [cite: 7]
+                self.threads.append(conn) # [cite: 7]
+        finally:
+            self.threadsLock.release() # [cite: 8]
+
+    def removeConn(self, conn): # [cite: 8]
+        try:
+            self.threadsLock.acquire() # [cite: 8]
+            self.threads.remove(conn) # [cite: 8]
+        finally:
+            self.threadsLock.release() # [cite: 8]
+
+    def close(self): # [cite: 8]
+        try:
+            self.running = False # [cite: 9]
+            self.threadsLock.acquire() # [cite: 9]
+
+            threads = list(self.threads) # [cite: 9]
+            for c in threads:
+                c.close() # [cite: 9]
+        finally:
+            self.threadsLock.release() # [cite: 9]
+
+
+class ConnectionHandler(threading.Thread): # [cite: 9]
+    def __init__(self, socClient, server, addr):
+        threading.Thread.__init__(self) # [cite: 9]
+        self.clientClosed = False # [cite: 9]
+        self.targetClosed = True # [cite: 10]
+        self.client = socClient # [cite: 10]
+        # CAMBIO PYTHON 3: El buffer ahora contendrá bytes
+        self.client_buffer = b'' 
+        self.server = server # [cite: 10]
+        self.log = 'Connection: ' + str(addr) # [cite: 10]
+
+    def close(self): # [cite: 10]
+        try:
+            if not self.clientClosed: # [cite: 11]
+                self.client.shutdown(socket.SHUT_RDWR) # [cite: 11]
+                self.client.close() # [cite: 11]
+        except: # [cite: 11]
+            pass
+        finally:
+            self.clientClosed = True # [cite: 11]
+
+        try:
+            if not self.targetClosed: # [cite: 12]
+                self.target.shutdown(socket.SHUT_RDWR) # [cite: 12]
+                self.target.close() # [cite: 12]
+        except: # [cite: 12]
+            pass
+        finally:
+            self.targetClosed = True # [cite: 12]
+
+    def run(self): # [cite: 12]
+        try:
+            # Recibir bytes
+            self.client_buffer = self.client.recv(BUFLEN) # [cite: 12]
+
+            # En Python 3, self.client_buffer es bytes. findHeader maneja bytes
+            hostPort = self.findHeader(self.client_buffer, b'X-Real-Host') # [cite: 13]
+
+            if hostPort == b'': # [cite: 13]
+                hostPort = DEFAULT_HOST.encode('latin-1') # Codificar DEFAULT_HOST a bytes
+
+            split = self.findHeader(self.client_buffer, b'X-Split') # [cite: 13]
+
+            if split != b'': # [cite: 13]
+                self.client.recv(BUFLEN) # [cite: 13]
+
+            if hostPort != b'': # [cite: 14]
+                passwd = self.findHeader(self.client_buffer, b'X-Pass') # [cite: 14]
+				
+                # PASS es str, se codifica para comparar con passwd (bytes)
+                if len(PASS) != 0 and passwd == PASS.encode('latin-1'): # [cite: 14]
+                    self.method_CONNECT(hostPort.decode('latin-1')) # Decodificar hostPort para la conexión
+                # Se envía una respuesta HTTP codificada a bytes
+                elif len(PASS) != 0 and passwd != PASS.encode('latin-1'): # [cite: 14]
+                    self.client.send(b'HTTP/1.1 400 WrongPass!\r\n\r\n')
+                # Comparar con bytes
+                elif hostPort.startswith(b'127.0.0.1') or hostPort.startswith(b'localhost'): # [cite: 15]
+                   self.method_CONNECT(hostPort.decode('latin-1')) # Decodificar hostPort
+                else:
+                    self.client.send(b'HTTP/1.1 403 Forbidden!\r\n\r\n') # [cite: 15]
+            else:
+                # CAMBIO PYTHON 3: print es una función
+                print('- No X-Real-Host!') 
+                self.client.send(b'HTTP/1.1 400 NoXRealHost!\r\n\r\n') # [cite: 16]
+
+        except Exception as e:
+            # CAMBIO PYTHON 3: Se usa str(e) en lugar de e.strerror (que no siempre existe)
+            self.log += ' - error: ' + str(e)
+            self.server.printLog(self.log)
+            pass
+        finally:
+            self.close() # [cite: 16]
+            self.server.removeConn(self) # [cite: 16]
+
+    # La función ahora trabaja con bytes (head y header son bytes)
+    def findHeader(self, head, header): # [cite: 16]
+        # Buscar bytes
+        aux = head.find(header + b': ') # [cite: 17]
+
+        if aux == -1: # [cite: 17]
+            return b''
+
+        aux = head.find(b':', aux) # [cite: 17]
+        head = head[aux+2:] # [cite: 17]
+        aux = head.find(b'\r\n') # [cite: 17]
+
+        if aux == -1: # [cite: 17]
+            return b''
+
+        return head[:aux] # [cite: 18]
+
+    # host ahora se recibe como cadena (decodificada en run)
+    def connect_target(self, host): # [cite: 18]
+        i = host.find(':') # [cite: 18]
+        if i != -1: # [cite: 18]
+            port = int(host[i+1:]) # [cite: 18]
+            host = host[:i] # [cite: 18]
+        else:
+            if self.method=='CONNECT': # [cite: 18]
+                port = 443 # [cite: 19]
+            else:
+                # LISTENING_PORT es str, se convierte a int
+                port = int(LISTENING_PORT) # [cite: 19]
+
+        (soc_family, soc_type, proto, _, address) = socket.getaddrinfo(host, port)[0] # [cite: 19]
+
+        self.target = socket.socket(soc_family, soc_type, proto) # [cite: 19]
+        self.targetClosed = False # [cite: 19]
+        self.target.connect(address) # [cite: 19]
+
+    def method_CONNECT(self, path): # [cite: 20]
+        self.log += ' - CONNECT ' + path # [cite: 20]
+
+        self.connect_target(path) # [cite: 20]
+        # Enviar bytes
+        self.client.sendall(RESPONSE) # [cite: 20]
+        self.client_buffer = b'' # Buffer vacío de bytes
+
+        self.server.printLog(self.log) # [cite: 20]
+        self.doCONNECT() # [cite: 20]
+
+    def doCONNECT(self): # [cite: 20]
+        socs = [self.client, self.target] # [cite: 21]
+        count = 0 # [cite: 21]
+        error = False # [cite: 21]
+        while True: # [cite: 21]
+            count += 1 # [cite: 21]
+            # select.select ahora devuelve un tuple de 3 listas
+            (recv, _, err) = select.select(socs, [], socs, 3) # [cite: 21]
+            if err: # [cite: 21]
+                error = True
+            if recv: # [cite: 21]
+                for in_ in recv:
+                    try:
+                        data = in_.recv(BUFLEN) # [cite: 22]
+ 
+                        if data: # [cite: 22]
+                            if in_ is self.target:
+                                # Enviar bytes
+                                self.client.send(data) # [cite: 22]
+                            else:
+                                while data: # [cite: 23]
+                                    # send devuelve los bytes enviados
+                                    byte = self.target.send(data) 
+                                    data = data[byte:] # [cite: 23]
+
+                            count = 0 # [cite: 23]
+                        else:
+                            break # [cite: 24]
+                    except:
+                        error = True # [cite: 24]
+                        break
+            if count == TIMEOUT: # [cite: 24]
+                error = True
+           
+            if error: # [cite: 25]
+                break
+
+# =================================================================
+# UTILIDADES Y FUNCIÓN PRINCIPAL (AJUSTES PARA PYTHON 3)
+# =================================================================
+
+def print_usage():
+    # CAMBIO PYTHON 3: print es una función
+    print('Usage: proxy.py -p <port>') # [cite: 25]
+    print('       proxy.py -b <bindAddr> -p <port>') # [cite: 25]
+    print('       proxy.py -b 0.0.0.0 -p 80') # [cite: 25]
+
+def parse_args(argv):
+    global LISTENING_ADDR
+    global LISTENING_PORT
+    
+    try:
+        opts, args = getopt.getopt(argv,"hb:p:",["bind=","port="]) # [cite: 26]
+    except getopt.GetoptError:
+        print_usage() # [cite: 26]
+        sys.exit(2)
+    for opt, arg in opts: # [cite: 26]
+        if opt == '-h': # [cite: 26]
+            print_usage()
+            sys.exit()
+        elif opt in ("-b", "--bind"):
+            LISTENING_ADDR = arg
+        elif opt in ("-p", "--port"):
+            # Asegurar que se almacena como int si se usa getopt -p
+            LISTENING_PORT = int(arg) # 
+
+
+def main(host=LISTENING_ADDR, port=LISTENING_PORT): # 
+    # CAMBIO PYTHON 3: print es una función
+    print("\n:-------PythonProxy-------:\n") # 
+    print("Listening addr: " + LISTENING_ADDR) # 
+    print("Listening port: " + str(LISTENING_PORT) + "\n") # 
+    print(":-------------------------:\n") # 
+    server = Server(LISTENING_ADDR, LISTENING_PORT) # [cite: 28]
+    server.start() # [cite: 28]
+    while True: # [cite: 28]
+        try:
+            time.sleep(2) # [cite: 28]
+        except KeyboardInterrupt:
+            # CAMBIO PYTHON 3: print es una función
+            print('Stopping...') 
+            server.close() # [cite: 28]
+            break
+
+# Comentar la línea original que parsea argumentos antes de __name__ y moverla
+if __name__ == '__main__':
+    # Se añade el parseo aquí para manejar los argumentos de línea de comandos de forma estándar
+    parse_args(sys.argv[1:]) 
+    main()

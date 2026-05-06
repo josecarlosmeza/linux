@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# --- Script Integral y Optimizado para badvpn-udpgw (Estable) en AlmaLinux ---
+
+echo "================================================================="
+echo " INICIO: Instalación Estable de badvpn-udpgw (Repositorio Oficial) "
+echo "================================================================="
+
+# --- Variables de Configuración ---
+SERVICE_FILE="/etc/systemd/system/badvpn-udpgw.service"
+SYSCTL_CONF="/etc/sysctl.conf"
+SSH_CONF="/etc/ssh/sshd_config"
+MAX_CLIENTS=1000
+MAX_CONNECTIONS=10
+
+# Función para verificar si un comando tuvo éxito
+check_status() {
+    if [ $? -ne 0 ]; then
+        echo "❌ ERROR: Falló el paso anterior. Abortando."
+        exit 1
+    fi
+}
+
+# --- 1. Preparación del Sistema ---
+echo -e "\n--- 1. Preparando el sistema y verificando dependencias ---"
+sudo dnf update -y
+# Incluye herramientas de compilación esenciales
+sudo dnf install git cmake gcc make util-linux -y 
+check_status
+echo "✅ Dependencias verificadas."
+
+# --- 2. Descarga y Compilación (Repositorio Oficial) ---
+echo -e "\n--- 2. Descargando y compilando desde el repositorio BASE/Oficial ---"
+cd /opt
+
+# Limpiar directorio si existe
+if [ -d "badvpn" ]; then
+    sudo rm -rf badvpn
+fi
+
+# Clonar el repositorio base (el más estable)
+sudo git clone https://github.com/ambrop72/badvpn.git
+check_status
+
+cd badvpn
+sudo mkdir build
+cd build
+sudo cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+check_status
+sudo make
+check_status
+sudo cp udpgw/badvpn-udpgw /usr/local/bin/
+sudo chmod +x /usr/local/bin/badvpn-udpgw
+check_status
+echo "✅ Compilación e instalación del binario estable completadas."
+
+# --- 3. Creación y Configuración del Servicio Systemd ---
+echo -e "\n--- 3. Creando el archivo de servicio Systemd optimizado ---"
+
+# Ejecución con --loglevel error y límites de cliente (SIN --nthreads)
+NEW_EXEC_START="/usr/local/bin/badvpn-udpgw --loglevel error --listen-addr 127.0.0.1:7300 --max-clients ${MAX_CLIENTS} --max-connections-for-client ${MAX_CONNECTIONS}"
+
+cat << EOF | sudo tee ${SERVICE_FILE}
+[Unit]
+Description=UDP Forwarder for badvpn-tun2socks
+After=network.target
+
+[Service]
+ExecStart=${NEW_EXEC_START}
+Restart=always
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
+EOF
+check_status
+
+# Iniciar y habilitar el servicio
+sudo systemctl daemon-reload
+sudo systemctl enable badvpn-udpgw.service
+sudo systemctl start badvpn-udpgw.service
+check_status
+echo "✅ Servicio badvpn-udpgw habilitado e iniciado."
+
+# --- 4. Optimización del Kernel (sysctl) ---
+echo -e "\n--- 4. Aplicando ajustes de red avanzados (sysctl) ---"
+
+# Estas optimizaciones de sysctl reducen la latencia y mejoran el manejo de conexiones TCP.
+sudo sed -i '/^# Configuración optimizada para servidores SSH\/VPN/,/^vm.swappiness = 10/d' ${SYSCTL_CONF}
+
+cat << EOF | sudo tee -a ${SYSCTL_CONF}
+# Configuración optimizada para servidores SSH/VPN
+net.ipv4.tcp_tw_reuse = 1
+net.core.somaxconn = 65535
+net.ipv4.tcp_fastopen = 3
+net.core.default_qdisc = fq
+net.ipv4.tcp_syncookies = 1
+vm.swappiness = 10
+EOF
+
+sudo sysctl -p
+check_status
+echo "✅ Parámetros de sysctl actualizados y aplicados."
+
+# --- 5. Optimización del Servidor SSH (sshd_config) ---
+echo -e "\n--- 5. Optimizando la configuración de SSH (sshd_config) ---"
+
+# Desactivar compresión y usar cifrados rápidos para el túnel SSH.
+sudo sed -i '/^Compression/d' ${SSH_CONF}
+echo "Compression no" | sudo tee -a ${SSH_CONF} > /dev/null
+
+sudo sed -i '/^Ciphers/d' ${SSH_CONF}
+sudo sed -i '/^KexAlgorithms/d' ${SSH_CONF}
+echo "Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com" | sudo tee -a ${SSH_CONF} > /dev/null
+echo "KexAlgorithms curve25519-sha256@libssh.org" | sudo tee -a ${SSH_CONF} > /dev/null
+
+sudo systemctl restart sshd
+check_status
+echo "✅ Servicio SSH reiniciado con configuración optimizada."
+
+# --- 6. Verificación de Estado Final ---
+echo -e "\n========================================================="
+echo "                 ✅ INSTALACIÓN COMPLETADA ✅              "
+echo "========================================================="
+sudo systemctl status badvpn-udpgw.service
+echo "  - Estado del servicio: Debe ser 'active (running)'"
+echo "  - Logs de bajo nivel desactivados (--loglevel error)."
+echo "  - Límite de tráfico: ${MAX_CLIENTS} IPs y ${MAX_CONNECTIONS} conexiones/IP."
+echo "========================================================="

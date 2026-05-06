@@ -1,0 +1,15 @@
+#!/bin/bash
+fun_exp () {
+(
+userexp=0
+for _user in $(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody); do
+   exp_line=$(chage -l "$_user" 2>/dev/null | grep "Account expires" | awk -F ': ' '{print $2}')
+   [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
+   exp_sec=$(date +%s --date="$exp_line" 2>/dev/null)
+   [[ -z "$exp_sec" ]] && continue
+   [[ $(date +%s) -gt "$exp_sec" ]] && userexp=$(($userexp + 1))
+done
+echo "$userexp" > /etc/RedLibre/Exp
+) &
+}
+fun_exp > /dev/null 2>&1

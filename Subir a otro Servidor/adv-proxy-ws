@@ -1,0 +1,621 @@
+#!/bin/bash
+# ============================================================
+# adv-proxy-ws — Proxy TCP en puerto 80 con peek + relay
+# Optimizado para 100+ usuarios simultáneos con Xray
+# ============================================================
+
+set -e
+echo "📦 Instalando dependencias..."
+if command -v dnf &>/dev/null; then
+  dnf install -y python3 python3-pip procps-ng net-tools 2>/dev/null || true
+elif command -v apt-get &>/dev/null; then
+  apt-get update -y && apt-get install -y python3 python3-pip procps net-tools 2>/dev/null || true
+fi
+
+# ── uvloop: event loop en C, 2-3x más rápido que asyncio puro ─────────────
+echo "⚡ Intentando instalar uvloop (event loop optimizado)..."
+python3 -m pip install --quiet uvloop 2>/dev/null \
+  || pip3 install --quiet uvloop 2>/dev/null \
+  || echo "  uvloop no disponible, usando asyncio estándar (funciona igual)"
+
+# ── Parámetros del kernel para alta concurrencia ──────────────────────────
+echo "🔧 Aplicando parámetros del kernel..."
+cat > /etc/sysctl.d/99-adv-proxy.conf << 'SYSCTL'
+# ── Colas de conexión ─────────────────────────────────────────
+net.core.somaxconn           = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.core.netdev_max_backlog  = 65535
+
+# ── Reutilización de sockets TIME_WAIT ────────────────────────
+net.ipv4.tcp_tw_reuse  = 1
+net.ipv4.tcp_fin_timeout = 15
+
+# ── TCP keepalive: detectar clientes muertos rápido ───────────
+net.ipv4.tcp_keepalive_time   = 60
+net.ipv4.tcp_keepalive_intvl  = 10
+net.ipv4.tcp_keepalive_probes = 3
+
+# ── Descriptores de archivo globales ─────────────────────────
+fs.file-max = 1000000
+
+# ── Buffers TCP (throughput alto por sesión) ─────────────────
+net.core.rmem_max            = 134217728
+net.core.wmem_max            = 134217728
+net.ipv4.tcp_rmem            = 4096 87380 134217728
+net.ipv4.tcp_wmem            = 4096 65536 134217728
+net.ipv4.tcp_congestion_control = bbr
+SYSCTL
+sysctl -p /etc/sysctl.d/99-adv-proxy.conf 2>/dev/null || true
+
+mkdir -p /opt/advanced-proxy
+fuser -k 80/tcp 2>/dev/null || true
+
+cat <<'PY' > /opt/advanced-proxy/proxy.py
+# -*- coding: utf-8 -*-
+"""
+adv-proxy-ws — relay TCP peek-and-forward.
+Optimizado para 100+ usuarios simultáneos con Xray VLESS-WS.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import gc
+import hashlib
+import logging
+import os
+import signal
+import socket
+import sys
+import time
+from typing import Optional, Tuple
+
+# ── Intentar uvloop (C extension, 2-3x más rápido) ───────────────────────
+try:
+    import uvloop
+    uvloop.install()          # reemplaza el event loop por defecto
+    _LOOP_NAME = "uvloop"
+except ImportError:
+    _LOOP_NAME = "asyncio"
+
+# ══════════════════════════════════════════════════════════════
+#  CONFIGURACIÓN
+# ══════════════════════════════════════════════════════════════
+BIND_HOST = "0.0.0.0"
+BIND_PORTS = [80]
+
+TARGET_SSH_IP   = "127.0.0.1"
+TARGET_SSH_PORT = 22
+
+TARGET_VLESS_IP   = "127.0.0.1"
+TARGET_VLESS_PORT = 10000
+TARGET_VLESS_PATH = "/VLESS"
+
+HDR_FORCE = b"X-Adv-Connection"   # ssh | vless
+
+# ── Relay ─────────────────────────────────────────────────────
+CHUNK          = 32768     # 32 KB: balance entre latencia y throughput
+WRITE_HIGH     = 262144    # 256 KB: umbral para activar back-pressure
+WRITE_LOW      = 65536     # 64 KB: umbral para reanudar escritura
+
+# ── Concurrencia ──────────────────────────────────────────────
+# Subir según carga: cada usuario puede abrir docenas de conexiones (HTTP/3→TCP + tabs).
+MAX_CONN       = 10000      # sesiones asyncio simultáneas (antes 600 rechazaba pronto)
+SERVER_BACKLOG = 65535      # cola listen() Linux (valor alto; sysctl somaxconn ya elevado)
+
+# Espera antes de rechazar si [MAX_CONN] está lleno (evita "rechazo duro" en picos cortos).
+QUEUE_WAIT_TIMEOUT = 300.0   # segundos
+
+# ── Peek ──────────────────────────────────────────────────────
+MAX_PEEK = 65536
+
+# ── Keepalive TCP ─────────────────────────────────────────────
+TCP_KEEPALIVE = True
+TCP_KEEPIDLE  = 60
+TCP_KEEPINTVL = 10
+TCP_KEEPCNT   = 3
+
+# ── Buffers de socket ─────────────────────────────────────────
+SOCK_SNDBUF = 131072       # 128 KB por socket de escritura
+SOCK_RCVBUF = 131072       # 128 KB por socket de lectura
+
+# ── Mantenimiento ─────────────────────────────────────────────
+RAM_CLEAN_SEC  = 60        # GC cada 60 s (más frecuente bajo carga)
+STATS_SEC      = 30        # imprimir estadísticas cada 30 s
+
+# ── Estado global ─────────────────────────────────────────────
+_sem: asyncio.Semaphore    # inicializado en main()
+_active: int = 0           # contador de sesiones activas
+_total:  int = 0           # total de sesiones desde inicio
+
+# ══════════════════════════════════════════════════════════════
+#  LOG
+# ══════════════════════════════════════════════════════════════
+def log(msg: str) -> None:
+    print("[adv-proxy %s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
+
+
+# ══════════════════════════════════════════════════════════════
+#  TUNING DE SOCKETS
+# ══════════════════════════════════════════════════════════════
+def tune_socket(writer: asyncio.StreamWriter) -> None:
+    """TCP_NODELAY + keepalive + buffers de SO_SNDBUF/SO_RCVBUF."""
+    try:
+        sock = writer.get_extra_info("socket")
+        if not sock:
+            return
+        # Sin Nagle: menor latencia en conexiones interactivas
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Buffers de kernel: más datos en vuelo = mayor throughput
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCK_SNDBUF)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCK_RCVBUF)
+        if TCP_KEEPALIVE:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPIDLE)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPINTVL)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPCNT)
+    except Exception:
+        pass
+
+
+def tune_writer_buffers(w: asyncio.StreamWriter) -> None:
+    """Sube el high-watermark del StreamWriter para reducir drain() innecesarios.
+
+    Con el límite por defecto (64 KB), asyncio pausa la escritura en cuanto
+    el buffer interno supera ese valor.  Subirlo a 256 KB permite que el
+    kernel agrupe más datos antes de pausar, reduciendo context-switches y
+    mejorando throughput en sesiones de video/streaming.
+    """
+    try:
+        w.transport.set_write_buffer_limits(high=WRITE_HIGH, low=WRITE_LOW)
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════
+#  DETECCIÓN DE PROTOCOLO
+# ══════════════════════════════════════════════════════════════
+def looks_tls(buf: bytes) -> bool:
+    return len(buf) >= 3 and buf[0] == 0x16 and buf[1] == 0x03
+
+
+def first_line(buf: bytes) -> bytes:
+    if b"\r\n" in buf:
+        return buf.split(b"\r\n", 1)[0]
+    return buf.split(b"\n", 1)[0]
+
+
+def is_connect_method(buf: bytes) -> bool:
+    ln = first_line(buf).strip()
+    if not ln:
+        return False
+    return ln.split(None, 1)[0].upper() == b"CONNECT"
+
+
+def is_ssh_banner(buf: bytes) -> bool:
+    return buf.startswith(b"SSH-2.0")
+
+
+def _iter_header_lines(block: bytes):
+    normalized = block.replace(b"\r\n", b"\n")
+    for raw in normalized.split(b"\n"):
+        yield raw
+
+
+def header_value(block: bytes, name: bytes) -> bytes:
+    nl = name.lower()
+    for raw in _iter_header_lines(block):
+        if b":" not in raw:
+            continue
+        k, _, v = raw.partition(b":")
+        if k.strip().lower() == nl:
+            return v.strip()
+    return b""
+
+
+def forced_connection_mode(buf: bytes) -> Optional[str]:
+    if not buf:
+        return None
+    raw = header_value(buf, HDR_FORCE).decode("latin-1", "replace").strip().lower()
+    if raw in ("ssh", "vless"):
+        return raw
+    return None
+
+
+def is_upgrade_websocket(buf: bytes) -> bool:
+    low = buf.lower()
+    return b"upgrade:" in low and b"websocket" in low
+
+
+def _inject_ws_upgrade(buf: bytes) -> bytes:
+    """Reinserta Upgrade/Connection si CloudFront los stripeó (RFC 7230 §6.1)."""
+    idx = buf.rfind(b"\r\n\r\n")
+    if idx == -1:
+        return buf
+    headers, end = buf[:idx], buf[idx:]
+    low = headers.lower()
+    extra = b""
+    if b"upgrade:" not in low:
+        extra += b"\r\nUpgrade: websocket"
+    if b"connection:" not in low:
+        extra += b"\r\nConnection: Upgrade"
+    return (headers + extra + end) if extra else buf
+
+
+def _rewrite_vless_path(buf: bytes, target_path: bytes = b"/VLESS") -> bytes:
+    """Normaliza /VLESS-AR5, /VLESS-US1... → path exacto que Xray tiene configurado."""
+    eol = buf.find(b"\r\n")
+    if eol == -1:
+        return buf
+    first = buf[:eol]
+    rest  = buf[eol:]
+    parts = first.split(b" ", 2)
+    if len(parts) < 2:
+        return buf
+    method    = parts[0]
+    path_full = parts[1]
+    proto     = parts[2] if len(parts) > 2 else b"HTTP/1.1"
+    if b"?" in path_full:
+        _, query = path_full.split(b"?", 1)
+        new_path = target_path + b"?" + query
+    else:
+        new_path = target_path
+    return method + b" " + new_path + b" " + proto + rest
+
+
+def ws_accept_from_request(buf: bytes) -> str:
+    key  = header_value(buf, b"Sec-WebSocket-Key")
+    if not key:
+        return "AnyValue"
+    guid = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    return base64.b64encode(hashlib.sha1(key + guid).digest()).decode("ascii")
+
+
+def is_ws_vless_path(buf: bytes) -> bool:
+    if b"\r\n\r\n" not in buf:
+        return False
+    try:
+        line0  = buf.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+        parts  = line0.split()
+        if len(parts) < 2:
+            return False
+        method = parts[0].upper()
+        if method not in ("GET", "CONNECT", "POST", "HEAD"):
+            return False
+        path = parts[1].split("?", 1)[0]
+        return path.lower().startswith("/vless")
+    except Exception:
+        return False
+
+
+def needs_local_http_handshake_for_ssh(buf: bytes) -> bool:
+    if b"\r\n\r\n" not in buf:
+        return False
+    return is_connect_method(buf) or is_upgrade_websocket(buf)
+
+
+def http_body_tail(buf: bytes) -> bytes:
+    i = buf.find(b"\r\n\r\n")
+    if i == -1:
+        return b""
+    return buf[i + 4:]
+
+
+def classify(buf: bytes) -> Optional[str]:
+    if not buf:
+        return None
+    if looks_tls(buf):
+        return "tls"
+    if is_ssh_banner(buf):
+        return "ssh"
+    if is_connect_method(buf):
+        return "ssh"
+    if b"\r\n\r\n" in buf:
+        forced = forced_connection_mode(buf)
+        if forced == "ssh":
+            return "ssh"
+        if forced == "vless":
+            return "vless"
+        if is_ws_vless_path(buf):
+            return "vless"
+        return "ssh"
+    if len(buf) >= 8:
+        fl = first_line(buf)
+        if fl.startswith(b"GET ") or fl.startswith(b"POST ") or fl.startswith(b"HEAD "):
+            return None
+    return None
+
+
+# ══════════════════════════════════════════════════════════════
+#  RELAY CORE
+# ══════════════════════════════════════════════════════════════
+async def peek_loop(reader: asyncio.StreamReader) -> Tuple[bytes, str]:
+    buf = b""
+    while len(buf) < MAX_PEEK:
+        k = classify(buf)
+        if k == "tls":
+            return buf, "tls"
+        if k in ("ssh", "vless"):
+            return buf, k
+        chunk = await reader.read(8192)
+        if not chunk:
+            break
+        buf += chunk
+        k = classify(buf)
+        if k == "tls":
+            return buf, "tls"
+        if k in ("ssh", "vless"):
+            return buf, k
+    k2 = classify(buf)
+    if k2 in ("ssh", "vless"):
+        return buf, k2
+    if looks_tls(buf):
+        return buf, "tls"
+    return buf, "ssh"
+
+
+async def half_duplex(
+    src: asyncio.StreamReader,
+    dst: asyncio.StreamWriter,
+    label: str,
+) -> None:
+    """Copia datos src→dst sin drain() innecesario.
+
+    Con write_buffer_limits(high=WRITE_HIGH), asyncio pausa automáticamente
+    cuando el buffer interno supera el umbral.  Llamar drain() solo cuando
+    hay back-pressure real elimina miles de context-switches por sesión.
+    """
+    try:
+        while True:
+            data = await src.read(CHUNK)
+            if not data:
+                break
+            dst.write(data)
+            # drain() solo si el buffer de escritura supera el high-watermark
+            if dst.transport.get_write_buffer_size() > WRITE_HIGH:
+                await dst.drain()
+    except asyncio.CancelledError:
+        raise
+    except Exception as ex:
+        log("half %s: %s" % (label, ex))
+
+
+async def transparent_relay(
+    client_r: asyncio.StreamReader,
+    client_w: asyncio.StreamWriter,
+    peek_buf: bytes,
+    host: str,
+    port: int,
+    peer: object,
+    kind: str,
+) -> None:
+    started = time.time()
+    up_w: Optional[asyncio.StreamWriter] = None
+    up_r: Optional[asyncio.StreamReader] = None
+    try:
+        try:
+            up_r, up_w = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=20.0
+            )
+        except Exception as ex:
+            log("peer=%r %s backend %s:%s fallo: %s" % (peer, kind, host, port, ex))
+            return
+
+        tune_socket(client_w)
+        tune_socket(up_w)
+        tune_writer_buffers(client_w)
+        tune_writer_buffers(up_w)
+
+        if peek_buf:
+            if kind == "vless":
+                send_buf = _inject_ws_upgrade(peek_buf)
+                send_buf = _rewrite_vless_path(send_buf, TARGET_VLESS_PATH.encode())
+            else:
+                send_buf = peek_buf
+            up_w.write(send_buf)
+            await up_w.drain()
+
+        try:
+            await asyncio.gather(
+                half_duplex(client_r, up_w, "c→up"),
+                half_duplex(up_r, client_w, "up→c"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    except asyncio.CancelledError:
+        raise
+    finally:
+        elapsed_ms = int((time.time() - started) * 1000)
+        log("peer=%r fin %s (%d ms)" % (peer, kind, elapsed_ms))
+        for w in [w for w in [up_w, client_w] if w is not None]:
+            try:
+                w.close()
+            except Exception:
+                pass
+        for w in [w for w in [up_w, client_w] if w is not None]:
+            try:
+                await asyncio.shield(w.wait_closed())
+            except Exception:
+                pass
+
+
+async def handle_client(
+    client_r: asyncio.StreamReader,
+    client_w: asyncio.StreamWriter,
+) -> None:
+    global _active, _total
+    peer = client_w.get_extra_info("peername")
+
+    # ── Cupo: espera antes de rechazar (picos; muchas conexiones por usuario CDN) ─
+    try:
+        await asyncio.wait_for(_sem.acquire(), timeout=QUEUE_WAIT_TIMEOUT)
+    except asyncio.TimeoutError:
+        log("peer=%r sin cupo tras %.0fs (MAX_CONN=%d); rechazando"
+            % (peer, QUEUE_WAIT_TIMEOUT, MAX_CONN))
+        try:
+            client_w.close()
+            await asyncio.shield(client_w.wait_closed())
+        except Exception:
+            pass
+        return
+
+    _active += 1
+    _total += 1
+    try:
+        peek_buf, kind = await peek_loop(client_r)
+        if kind == "tls":
+            try:
+                client_w.close()
+                await asyncio.shield(client_w.wait_closed())
+            except Exception:
+                pass
+            return
+
+        if kind == "vless":
+            await transparent_relay(
+                client_r, client_w, peek_buf,
+                TARGET_VLESS_IP, TARGET_VLESS_PORT, peer, "vless",
+            )
+            return
+
+        if needs_local_http_handshake_for_ssh(peek_buf):
+            if is_upgrade_websocket(peek_buf):
+                accept = ws_accept_from_request(peek_buf)
+                resp = (
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Accept: %s\r\n"
+                    "Server: nginx/1.24.0\r\n\r\n" % accept
+                ).encode("latin-1")
+            else:
+                resp = (
+                    "HTTP/1.1 200 Connection established\r\n"
+                    "Proxy-Agent: adv-proxy-ws\r\n\r\n"
+                ).encode("latin-1")
+            client_w.write(resp)
+            await client_w.drain()
+            tail = http_body_tail(peek_buf)
+            await transparent_relay(
+                client_r, client_w, tail,
+                TARGET_SSH_IP, TARGET_SSH_PORT, peer, "ssh-http",
+            )
+            return
+
+        await transparent_relay(
+            client_r, client_w, peek_buf,
+            TARGET_SSH_IP, TARGET_SSH_PORT, peer, "ssh",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as ex:
+        log("peer=%r error: %s: %r" % (peer, type(ex).__name__, ex))
+    finally:
+        _active -= 1
+        _sem.release()
+        try:
+            client_w.close()
+            await asyncio.shield(client_w.wait_closed())
+        except Exception:
+            pass
+
+
+# ══════════════════════════════════════════════════════════════
+#  TAREAS DE MANTENIMIENTO
+# ══════════════════════════════════════════════════════════════
+async def ram_clean() -> None:
+    while True:
+        await asyncio.sleep(RAM_CLEAN_SEC)
+        gc.collect()
+
+
+async def stats_reporter() -> None:
+    """Imprime sesiones activas/totales periódicamente."""
+    while True:
+        await asyncio.sleep(STATS_SEC)
+        log("stats: activas=%d/%d  totales=%d  loop=%s"
+            % (_active, MAX_CONN, _total, _LOOP_NAME))
+
+
+# ══════════════════════════════════════════════════════════════
+#  ARRANQUE
+# ══════════════════════════════════════════════════════════════
+async def main() -> None:
+    global _sem
+    _sem = asyncio.Semaphore(MAX_CONN)
+
+    asyncio.create_task(ram_clean())
+    asyncio.create_task(stats_reporter())
+
+    servers = []
+    for p in BIND_PORTS:
+        s = await asyncio.start_server(
+            handle_client,
+            BIND_HOST,
+            p,
+            backlog=SERVER_BACKLOG,       # cola de accept() más grande
+            reuse_port=True,              # SO_REUSEPORT: balance entre workers
+        )
+        servers.append(s)
+        log("escuchando %s:%s  (backlog=%d  max_conn=%d  loop=%s)"
+            % (BIND_HOST, p, SERVER_BACKLOG, MAX_CONN, _LOOP_NAME))
+
+    log("SSH %s:%s | VLESS %s:%s%s | forzar %s: ssh|vless"
+        % (TARGET_SSH_IP, TARGET_SSH_PORT,
+           TARGET_VLESS_IP, TARGET_VLESS_PORT, TARGET_VLESS_PATH,
+           HDR_FORCE.decode()))
+
+    await asyncio.gather(*[s.serve_forever() for s in servers])
+
+
+if __name__ == "__main__":
+    if sys.version_info < (3, 7):
+        print("Python 3.7+ requerido", file=sys.stderr)
+        sys.exit(1)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+PY
+
+chmod +x /opt/advanced-proxy/proxy.py
+
+cat <<'UNIT' > /etc/systemd/system/adv-proxy.service
+[Unit]
+Description=adv-proxy-ws peek relay (port 80) — alta concurrencia (10k sesiones)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/advanced-proxy
+ExecStart=/usr/bin/python3 /opt/advanced-proxy/proxy.py
+Restart=always
+RestartSec=3
+
+# ── Límites de recursos ────────────────────────────────────────────
+# ~10k sesiones × varios FDs cada una + kernels / Xray → 1M descriptors
+LimitNOFILE=1048576
+LimitNPROC=infinity
+TasksMax=infinity
+
+# ── Evitar que OOM killer mate el proxy antes que otros procesos ──
+OOMScoreAdjust=-100
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable adv-proxy 2>/dev/null || true
+systemctl restart adv-proxy 2>/dev/null || true
+
+echo "✅ adv-proxy-ws instalado (hasta ~10k sesiones; cola 300 s antes de rechazar)"
+echo "   uvloop: $(python3 -c 'import uvloop; print("activo ✔")' 2>/dev/null || echo 'no disponible (asyncio estándar)')"
+echo "   Ver logs: journalctl -u adv-proxy -f"

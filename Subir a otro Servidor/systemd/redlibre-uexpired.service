@@ -1,0 +1,8 @@
+[Unit]
+Description=RedLibre — actualizar contador de usuarios expirados (/etc/RedLibre/Exp)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/uexpired
+StandardOutput=null
+StandardError=journal

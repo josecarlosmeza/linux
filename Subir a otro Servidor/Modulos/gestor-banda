@@ -1,0 +1,274 @@
+#!/bin/bash
+# RedLibre — gestión de ancho de banda (tc/htb + IFB) y bloqueo P2P/torrent (iptables REDLIBRE_P2P)
+
+set +e
+
+CONF="/etc/RedLibre/bandwidth.conf"
+LITE_FLAG="/etc/RedLibre/torrent-lite.enabled"
+CHAIN="REDLIBRE_P2P"
+
+_detect_dev() {
+	ip -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
+}
+
+_ensure_tools() {
+	command -v tc &>/dev/null && command -v ip &>/dev/null && return 0
+	if command -v dnf &>/dev/null; then dnf install -y iproute iptables &>/dev/null; fi
+	if command -v yum &>/dev/null && ! command -v tc &>/dev/null; then yum install -y iproute iptables &>/dev/null; fi
+	if command -v apt-get &>/dev/null; then apt-get install -y iproute2 iptables &>/dev/null; fi
+}
+
+_load_conf() {
+	[[ -f "$CONF" ]] || return 1
+	# shellcheck source=/dev/null
+	. "$CONF"
+	UP_MBIT=${UP_MBIT:-0}
+	DOWN_MBIT=${DOWN_MBIT:-0}
+	DEV="${DEV:-$(_detect_dev)}"
+	[[ -n "$DEV" ]] || return 1
+	return 0
+}
+
+_save_conf() {
+	local dev="$1" up="$2" down="$3"
+	mkdir -p "$(dirname "$CONF")"
+	cat >"$CONF" <<EOF
+# Generado por gestor-banda (RedLibre)
+DEV=$dev
+UP_MBIT=$up
+DOWN_MBIT=$down
+EOF
+}
+
+_remove_tc_dev() {
+	local d="$1"
+	tc qdisc del dev "$d" root 2>/dev/null
+	tc qdisc del dev "$d" ingress 2>/dev/null
+}
+
+_apply_egress() {
+	local dev="$1" mbit="$2"
+	[[ "$mbit" =~ ^[0-9]+$ ]] && [[ "$mbit" -ge 1 ]] || return 0
+	tc qdisc add dev "$dev" root handle 1: htb default 10
+	tc class add dev "$dev" parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
+	tc class add dev "$dev" parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
+	tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip src 0.0.0.0/0 flowid 1:10
+}
+
+_apply_ingress() {
+	local dev="$1" mbit="$2"
+	[[ "$mbit" =~ ^[0-9]+$ ]] && [[ "$mbit" -ge 1 ]] || return 0
+	modprobe ifb numifbs=1 2>/dev/null
+	ip link set dev ifb0 up 2>/dev/null || return 1
+	tc qdisc add dev "$dev" handle ffff: ingress
+	tc filter add dev "$dev" parent ffff: protocol ip u32 match u32 0 0 action mirred egress redirect dev ifb0
+	tc qdisc add dev ifb0 root handle 1: htb default 10
+	tc class add dev ifb0 parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
+	tc class add dev ifb0 parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
+	tc filter add dev ifb0 parent 1: protocol ip prio 1 u32 match ip dst 0.0.0.0/0 flowid 1:10
+}
+
+tc_remove_all() {
+	local dev="${1:-$(_detect_dev)}"
+	[[ -z "$dev" ]] && return 1
+	_remove_tc_dev ifb0
+	_remove_tc_dev "$dev"
+	ip link set dev ifb0 down 2>/dev/null
+	modprobe -r ifb 2>/dev/null
+	return 0
+}
+
+tc_apply() {
+	_ensure_tools
+	_load_conf || { echo -e "\033[1;31mNo hay configuración. Use la opción de configurar primero.\033[0m"; return 1; }
+	tc_remove_all "$DEV" 2>/dev/null
+	[[ "$UP_MBIT" =~ ^[0-9]+$ ]] && [[ "$UP_MBIT" -ge 1 ]] && _apply_egress "$DEV" "$UP_MBIT"
+	[[ "$DOWN_MBIT" =~ ^[0-9]+$ ]] && [[ "$DOWN_MBIT" -ge 1 ]] && _apply_ingress "$DEV" "$DOWN_MBIT"
+	echo -e "\033[1;32mLímites aplicados en \033[1;37m$DEV\033[0m (subida ${UP_MBIT} Mbit/s, bajada ${DOWN_MBIT} Mbit/s)."
+	return 0
+}
+
+_install_systemd_restore() {
+	local SVC="/etc/systemd/system/redlibre-bw-restore.service"
+	[[ -f "$SVC" ]] && grep -q gestor-banda "$SVC" 2>/dev/null && return 0
+	cat >"$SVC" <<'UNIT'
+[Unit]
+Description=RedLibre — restaurar límites de ancho de banda (tc)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/gestor-banda restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	systemctl daemon-reload 2>/dev/null || true
+	systemctl enable redlibre-bw-restore.service 2>/dev/null || true
+}
+
+restore() {
+	_ensure_tools
+	if _load_conf; then
+		tc_apply && return 0
+	fi
+	return 0
+}
+
+torrent_lite_on() {
+	_ensure_tools
+	iptables -N "$CHAIN" 2>/dev/null || iptables -F "$CHAIN"
+	if ! iptables -A "$CHAIN" -p tcp -m multiport --dports 6881:6889,6969,51413 -j DROP 2>/dev/null; then
+		for p in 6881 6882 6883 6884 6885 6886 6887 6888 6889 6969 51413; do
+			iptables -A "$CHAIN" -p tcp --dport "$p" -j DROP 2>/dev/null
+		done
+	fi
+	if ! iptables -A "$CHAIN" -p udp -m multiport --dports 6881:6889,6969,51413 -j DROP 2>/dev/null; then
+		for p in 6881 6882 6883 6884 6885 6886 6887 6888 6889 6969 51413; do
+			iptables -A "$CHAIN" -p udp --dport "$p" -j DROP 2>/dev/null
+		done
+	fi
+	if ! iptables -A "$CHAIN" -p tcp -m multiport --sports 6881:6889 -j DROP 2>/dev/null; then
+		for p in 6881 6882 6883 6884 6885 6886 6887 6888 6889; do
+			iptables -A "$CHAIN" -p tcp --sport "$p" -j DROP 2>/dev/null
+		done
+	fi
+	if ! iptables -A "$CHAIN" -p udp -m multiport --sports 6881:6889 -j DROP 2>/dev/null; then
+		for p in 6881 6882 6883 6884 6885 6886 6887 6888 6889; do
+			iptables -A "$CHAIN" -p udp --sport "$p" -j DROP 2>/dev/null
+		done
+	fi
+	# Firmas comunes BitTorrent (coste CPU; solo si el módulo está)
+	modprobe xt_string 2>/dev/null
+	iptables -A "$CHAIN" -m string --algo bm --string "BitTorrent protocol" -j DROP 2>/dev/null
+	iptables -A "$CHAIN" -m string --algo bm --string "peer_id=" -j DROP 2>/dev/null
+	iptables -A "$CHAIN" -m string --algo bm --string "info_hash" -j DROP 2>/dev/null
+	iptables -A "$CHAIN" -j RETURN
+	for tbl in INPUT FORWARD OUTPUT; do
+		iptables -C "$tbl" -j "$CHAIN" 2>/dev/null || iptables -I "$tbl" 1 -j "$CHAIN"
+	done
+	touch "$LITE_FLAG"
+	echo -e "\033[1;33mBloqueo ligero P2P/torrent activado (cadena $CHAIN).\033[0m"
+}
+
+torrent_lite_off() {
+	iptables -D INPUT -j "$CHAIN" 2>/dev/null
+	iptables -D FORWARD -j "$CHAIN" 2>/dev/null
+	iptables -D OUTPUT -j "$CHAIN" 2>/dev/null
+	iptables -F "$CHAIN" 2>/dev/null
+	iptables -X "$CHAIN" 2>/dev/null
+	rm -f "$LITE_FLAG"
+	echo -e "\033[1;32mBloqueo ligero desactivado.\033[0m"
+}
+
+show_status() {
+	clear
+	echo -e "\E[44;1;37m   REDLIBRE — estado ancho de banda / P2P   \E[0m"
+	echo ""
+	local d
+	d=$(_detect_dev)
+	echo -e "\033[1;33mInterfaz por defecto:\033[0m $d"
+	echo ""
+	echo -e "\033[1;32mtc qdisc (\033[1;37m$d\033[1;32m):\033[0m"
+	tc qdisc show dev "$d" 2>/dev/null || echo "(vacío)"
+	echo ""
+	if tc qdisc show dev ifb0 &>/dev/null; then
+		echo -e "\033[1;32mtc qdisc (ifb0 — límite de bajada):\033[0m"
+		tc qdisc show dev ifb0
+		echo ""
+	fi
+	echo -e "\033[1;33mConfig:\033[0m $CONF"
+	[[ -f "$CONF" ]] && cat "$CONF"
+	echo ""
+	if [[ -f "$LITE_FLAG" ]]; then
+		echo -e "Bloqueo P2P ligero: \033[1;32mactivo\033[0m"
+	else
+		echo -e "Bloqueo P2P ligero: \033[1;31minactivo\033[0m"
+	fi
+	echo ""
+	iptables -nL "$CHAIN" 2>/dev/null | head -20 || echo "(cadena $CHAIN no existe)"
+	echo ""
+	read -p "$(echo -e "\033[1;32mENTER para volver...\033[0m") " _
+}
+
+menu_loop() {
+	while true; do
+		clear
+		echo -e "\E[44;1;37m   GESTOR DE ANCHO DE BANDA + P2P (RedLibre)   \E[0m"
+		echo ""
+		echo -e " \033[1;33mUsa Linux traffic control (tc).\033[0m"
+		echo -e " \033[1;31mLímite global en la interfaz saliente del VPS.\033[0m"
+		echo ""
+		echo -e " \033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Configurar y aplicar límites (Mbit/s)"
+		echo -e " \033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Quitar límites de ancho de banda"
+		echo -e " \033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Activar bloqueo \033[1;37mligero\033[1;33m P2P/torrent (iptables)"
+		echo -e " \033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Desactivar bloqueo ligero P2P"
+		echo -e " \033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Ver estado (tc + reglas)"
+		echo -e " \033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Persistir límites tras reinicio (systemd)"
+		echo -e " \033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver"
+		echo ""
+		read -p "$(echo -e "\033[1;32mOpción: \033[1;37m") " op
+		case "$op" in
+		1)
+			dev=$(_detect_dev)
+			echo -e "\033[1;33mInterfaces detectada: \033[1;37m$dev\033[0m"
+			read -p "$(echo -e "\033[1;32mInterfaz [Enter=\033[1;37m$dev\033[1;32m]: \033[0m") " ndev
+			[[ -n "$ndev" ]] && dev="$ndev"
+			read -p "$(echo -e "\033[1;32mLímite de \033[1;37mSUBIDA\033[1;32m (Mbit/s, 0=sin límite): \033[0m") " up
+			read -p "$(echo -e "\033[1;32mLímite de \033[1;37mBAJADA\033[1;32m (Mbit/s, 0=sin límite): \033[0m") " down
+			up=${up:-0}
+			down=${down:-0}
+			_save_conf "$dev" "$up" "$down"
+			tc_apply && _install_systemd_restore
+			sleep 2
+			;;
+		2)
+			_load_conf 2>/dev/null
+			tc_remove_all "${DEV:-$(_detect_dev)}"
+			systemctl disable redlibre-bw-restore.service 2>/dev/null
+			echo -e "\033[1;32mLímites tc eliminados.\033[0m"
+			sleep 2
+			;;
+		3)
+			torrent_lite_on
+			sleep 2
+			;;
+		4)
+			torrent_lite_off
+			sleep 2
+			;;
+		5)
+			show_status
+			;;
+		6)
+			_install_systemd_restore
+			if [[ -f "$CONF" ]]; then
+				systemctl enable redlibre-bw-restore.service 2>/dev/null
+				systemctl start redlibre-bw-restore.service 2>/dev/null
+				echo -e "\033[1;32mServicio redlibre-bw-restore habilitado.\033[0m"
+			else
+				echo -e "\033[1;31mPrimero configure límites (opción 1).\033[0m"
+			fi
+			sleep 2
+			;;
+		0|"")
+			break
+			;;
+		*)
+			echo -e "\033[1;31mOpción no válida.\033[0m"
+			sleep 1
+			;;
+		esac
+	done
+}
+
+# CLI: /bin/gestor-banda restore
+if [[ "${1:-}" == "restore" ]]; then
+	restore
+	exit 0
+fi
+
+menu_loop
+exit 0

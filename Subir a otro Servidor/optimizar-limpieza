@@ -1,0 +1,34 @@
+#!/bin/bash
+
+echo "--- 1. Optimizando Kernel TCP (Limpieza de conexiones muertas) ---"
+cat <<EOF >> /etc/sysctl.conf
+net.ipv4.tcp_keepalive_time=60
+net.ipv4.tcp_keepalive_intvl=10
+net.ipv4.tcp_keepalive_probes=3
+EOF
+sysctl -p
+
+echo "--- 2. Ajustando SSH para detectar desconexiones rápidas ---"
+sed -i 's/#ClientAliveInterval.*/ClientAliveInterval 30/' /etc/ssh/sshd_config
+sed -i 's/#ClientAliveCountMax.*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
+systemctl restart sshd
+
+echo "--- 3. Corrigiendo el script de límites (Lógica de búsqueda) ---"
+# Hacemos una copia de seguridad por si acaso
+cp /usr/bin/check_ssh_limits.sh /usr/bin/check_ssh_limits.sh.bak
+# Reemplazamos la búsqueda fallida por una que encuentre al usuario al inicio de línea
+sed -i 's/grep "^\* " "$DB_SOURCE"/grep "^$1 " "$DB_SOURCE"/' /usr/bin/check_ssh_limits.sh
+
+echo "--- 4. Creando Limpiador Automático (Cronjob cada 30 min) ---"
+cat <<EOF > /usr/local/bin/limpiar_ssh.sh
+#!/bin/bash
+# Mata procesos SSH colgados sin terminal activa
+ps aux | grep 'sshd:' | grep -v 'root' | grep -v 'grep' | awk '{print \$2}' | xargs kill -9 2>/dev/null
+EOF
+chmod +x /usr/local/bin/limpiar_ssh.sh
+
+# Agregar al cron si no existe
+(crontab -l 2>/dev/null; echo "*/30 * * * * /usr/local/bin/limpiar_ssh.sh") | crontab -
+
+echo "--- ¡PROCESO COMPLETADO! ---"
+echo "El servidor ahora limpiará conexiones fantasma automáticamente."
