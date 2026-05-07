@@ -1,3 +1,2 @@
-1.0.0.3
-Revendedores SSH: grupo redlibre-rev y ForceCommand al panel (sin shell remoto libre)
-Script revendedor-sshd-lock; home 750; tras actualizar ejecutar gestor opcion 5
+1.0.0.4
+Panel revendedor opcion 6: solo total de usuarios con sesion SSH activa (propios)
