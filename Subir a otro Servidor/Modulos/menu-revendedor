@@ -31,6 +31,8 @@ while true; do
         _lc=$(grep -E '^LIMITE_USUARIOS=' "$_limf" | head -1 | cut -d= -f2)
         [[ "${_lc//[^0-9]/}" = "" ]] && _lc=0
         _cnt=$(find "/etc/RedLibre/revendedores/$_RL_USER/usuarios" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)
+        _cnt="${_cnt//[[:space:]]/}"
+        [[ -z "$_cnt" ]] && _cnt=0
         if [[ "$_lc" = "0" || -z "$_lc" ]]; then
             echo -e "\033[1;36m Cupo SSH: \033[1;32msin límite \033[1;37m($_cnt creados)\033[0m"
         else

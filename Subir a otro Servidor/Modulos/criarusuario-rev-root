@@ -14,12 +14,18 @@ redlibre_rev_init
 
 _lim=$(redlibre_rev_limit)
 _cnt=$(redlibre_rev_count_owned)
+_lim="${_lim//[[:space:]]/}"
+_cnt="${_cnt//[[:space:]]/}"
+[[ -z "$_lim" ]] && _lim=0
+[[ -z "$_cnt" ]] && _cnt=0
 if [[ "$_lim" -gt 0 ]] && [[ "$_cnt" -ge "$_lim" ]]; then
     echo -e "\n\033[41;1;37m Límite de usuarios alcanzado ($_lim). Contacte al administrador. \033[0m\n"
     exit 1
 fi
 
 _cap=$(redlibre_rev_max_sesiones_usuario)
+_cap="${_cap//[[:space:]]/}"
+[[ -z "$_cap" ]] && _cap=0
 _mxt=$(redlibre_rev_conf_get "MAX_SESIONES_TOTAL_REVENDEDOR" "0")
 _mxt="${_mxt//[^0-9]/}"
 [[ -z "$_mxt" ]] && _mxt=0
@@ -88,18 +94,34 @@ if [[ "$_cap" -gt 0 ]] && [[ "$sshlimiter" -gt "$_cap" ]]; then
     sshlimiter="$_cap"
 fi
 
-final=$(date "+%Y-%m-%d" -d "+$dias days" 2>/dev/null || date "+%Y-%m-%d" --date="+$dias days")
-gui=$(date "+%d/%m/%Y" -d "+$dias days" 2>/dev/null || date "+%d/%m/%Y" --date="+$dias days")
+final=$(date "+%Y-%m-%d" -d "+$dias days" 2>/dev/null || date "+%Y-%m-%d" --date="+$dias days" 2>/dev/null)
+gui=$(date "+%d/%m/%Y" -d "+$dias days" 2>/dev/null || date "+%d/%m/%Y" --date="+$dias days" 2>/dev/null)
 hora_cambio=$(date "+%H:%M:%S")
 
-# Mismo criterio que importación y criarteste-rev: chpasswd (hash del sistema, sin límite DES de crypt "password")
-if ! useradd -e "$final" -M -s /bin/false "$username" >/dev/null 2>&1; then
-    echo -e "\n\033[41;1;37m Fallo al crear el usuario. \033[0m\n"
+if [[ ! "$final" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo -e "\n\033[1;31mNo se pudo calcular la fecha de vencimiento (date). Revise zona horaria y locale.\033[0m\n"
     exit 1
 fi
-if ! echo "$username:$password" | chpasswd 2>/dev/null; then
+
+_RL_FALSE="/bin/false"
+[[ -x "$_RL_FALSE" ]] || _RL_FALSE="/usr/bin/false"
+[[ -x "$_RL_FALSE" ]] || _RL_FALSE="/usr/sbin/nologin"
+
+_ua_log=$(mktemp) || exit 1
+if ! useradd -e "$final" -M -s "$_RL_FALSE" "$username" >"$_ua_log" 2>&1; then
+    echo -e "\n\033[41;1;37m Fallo al crear el usuario (useradd). \033[0m"
+    echo -e "\033[1;33mDetalle:\033[0m"
+    sed 's/^/  /' "$_ua_log" 2>/dev/null || cat "$_ua_log"
+    echo ""
+    rm -f "$_ua_log"
+    exit 1
+fi
+rm -f "$_ua_log"
+
+if ! redlibre_rev_set_password_plain "$username" "$password"; then
     userdel --force "$username" 2>/dev/null || true
-    echo -e "\n\033[41;1;37m Fallo al establecer la contraseña (chpasswd). \033[0m\n"
+    echo -e "\n\033[41;1;37m Fallo al establecer la contraseña (chpasswd/openssl). \033[0m"
+    echo -e "\033[1;33mInstale «openssl» o relaje pwquality en /etc/security/pwquality.conf si aplica.\033[0m\n"
     exit 1
 fi
 

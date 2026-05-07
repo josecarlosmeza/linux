@@ -10,7 +10,16 @@ redlibre_rev_fail() {
 redlibre_rev_init() {
     [[ $EUID -eq 0 ]] || redlibre_rev_fail "Error interno: se requiere root."
     REV="${SUDO_USER:-}"
+    if [[ -z "$REV" && -n "${SUDO_UID:-}" ]]; then
+        REV=$(getent passwd "$SUDO_UID" 2>/dev/null | cut -d: -f1)
+    fi
+    if [[ -z "$REV" ]]; then
+        REV=$(logname 2>/dev/null || true)
+    fi
+    REV="${REV//$'\r'/}"
+    REV="${REV//[[:space:]]/}"
     [[ -n "$REV" ]] || redlibre_rev_fail "No se pudo determinar el revendedor (use sudo desde su usuario)."
+    [[ "$REV" != "root" ]] || redlibre_rev_fail "Use el panel como usuario revendedor (sudo desde esa cuenta), no como root."
     [[ -d "/etc/RedLibre/revendedores/$REV" ]] || redlibre_rev_fail "Esta cuenta no está registrada como revendedor."
 }
 
@@ -53,7 +62,31 @@ redlibre_rev_limit() {
 }
 
 redlibre_rev_count_owned() {
-    find "/etc/RedLibre/revendedores/$REV/usuarios" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l
+    local n
+    n=$(find "/etc/RedLibre/revendedores/$REV/usuarios" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)
+    n="${n//[[:space:]]/}"
+    [[ -z "$n" ]] && n=0
+    echo "$n"
+}
+
+# Contraseña en claro → shadow. chpasswd primero; si PAM/pwquality lo rechaza, hash SHA-512 con openssl + usermod.
+redlibre_rev_set_password_plain() {
+    local u="$1" p="$2" h
+    [[ -n "$u" && -n "$p" ]] || return 1
+    id "$u" &>/dev/null || return 1
+    if printf '%s\n' "${u}:${p}" | chpasswd 2>/dev/null; then
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        h=$(printf '%s\n' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
+        if [[ -z "$h" ]]; then
+            h=$(openssl passwd -6 "$p" 2>/dev/null) || h=""
+        fi
+        if [[ -n "$h" ]] && usermod -p "$h" "$u" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
 }
 
 redlibre_rev_list_owned() {

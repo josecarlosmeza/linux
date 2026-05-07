@@ -185,8 +185,8 @@ _import_rev() {
         fi
 
         if id "$u" &>/dev/null; then
-            if ! echo "$u:$pass" | chpasswd 2>/dev/null; then
-                echo -e "\033[1;31mchpasswd falló para $u (¿contraseña vacía o no permitida?).\033[0m"
+            if ! redlibre_rev_set_password_plain "$u" "$pass"; then
+                echo -e "\033[1;31mFallo al fijar contraseña para $u (chpasswd/openssl).\033[0m"
                 continue
             fi
             chage -E "$expry" "$u" 2>/dev/null || true
@@ -195,9 +195,9 @@ _import_rev() {
                 echo -e "\033[1;31mNo se pudo crear $u.\033[0m"
                 continue
             }
-            if ! echo "$u:$pass" | chpasswd 2>/dev/null; then
+            if ! redlibre_rev_set_password_plain "$u" "$pass"; then
                 userdel --force "$u" 2>/dev/null || true
-                echo -e "\033[1;31mchpasswd falló para $u recién creado; usuario eliminado.\033[0m"
+                echo -e "\033[1;31mFallo al fijar contraseña para $u recién creado; usuario eliminado.\033[0m"
                 continue
             fi
         fi

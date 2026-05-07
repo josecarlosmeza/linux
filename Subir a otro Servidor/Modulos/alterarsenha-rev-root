@@ -68,12 +68,16 @@ fi
 
 ps x | grep "$user" | grep -v grep | grep -v pt >/tmp/rem_rev 2>/dev/null
 if [[ $(grep -c "$user" /tmp/rem_rev 2>/dev/null) -eq 0 ]]; then
-    echo "$user:$password" | chpasswd
+    :
 else
     echo ""
     echo -e "\033[1;33mUsuario conectado. Desconectando...\033[0m"
     pkill -f "$user" 2>/dev/null
-    echo "$user:$password" | chpasswd
+fi
+if ! redlibre_rev_set_password_plain "$user" "$password"; then
+    echo -e "\n\033[1;31mNo se pudo cambiar la contraseña (chpasswd/openssl).\033[0m\n"
+    sleep 2
+    exit 1
 fi
 echo "$password" > "/etc/RedLibre/senha/$user"
 echo -e "\n\033[1;32mContraseña actualizada para $user.\033[0m\n"

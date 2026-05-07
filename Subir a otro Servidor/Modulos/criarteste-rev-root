@@ -82,7 +82,9 @@ if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
     error_exit "No se pudo crear el usuario."
 fi
 
-echo "$nome:$pass" | chpasswd
+if ! redlibre_rev_set_password_plain "$nome" "$pass"; then
+    error_exit "No se pudo establecer la contraseña (chpasswd/openssl)."
+fi
 echo "$pass" >"$PASS_DIR/$nome"
 echo "$nome $limit" >>"$DB_FILE"
 redlibre_rev_register_user "$nome"

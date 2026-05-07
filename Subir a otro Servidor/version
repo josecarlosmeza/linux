@@ -1,2 +1,2 @@
-1.0.0.15
-criarusuario-rev-root: crear con useradd+chpasswd (hash del sistema); userbackup-rev: desbloqueo tras import y chpasswd con comprobación de error
+1.0.0.16
+redlibre-rev-common: detectar revendedor (SUDO_UID/logname), conteo cupo sin espacios, redlibre_rev_set_password_plain (chpasswd + openssl/usermod). criarusuario-rev: useradd con log de error, shell false/nologin, contraseña vía helper. Import/cambiar clave/prueba alineados.
