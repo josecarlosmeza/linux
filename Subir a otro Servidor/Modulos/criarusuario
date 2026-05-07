@@ -19,6 +19,11 @@ echo ""
 
 # --- Entrada de Datos ---
 echo -ne "\033[1;32mNombre de usuario:\033[1;37m "; read username
+[[ -z "$username" ]] && { echo -e "\n\033[1;31mNombre vacío.\033[0m\n"; exit 1; }
+if [[ ${#username} -le 3 ]] || [[ ! "$username" =~ ^[a-zA-Z0-9]+$ ]]; then
+    echo -e "\n\033[1;31mNombre inválido: debe tener más de 3 caracteres y solo letras y números (sin símbolos ni espacios).\033[0m\n"
+    exit 1
+fi
 if id "$username" &>/dev/null; then
     echo -e "\n\033[41;1;37m Error: ¡El usuario ya existe! \033[0m\n"
     exit 1

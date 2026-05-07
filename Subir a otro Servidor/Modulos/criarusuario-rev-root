@@ -53,6 +53,7 @@ if [[ "$_mxt" -gt 0 ]]; then
 else
     echo -e "\033[1;37m  • Sesiones totales entre clientes (admin): \033[1;32msin tope global\033[0m"
 fi
+echo -e "\033[1;37m  • Nombre de usuario: más de 3 caracteres, solo \033[1;33mletras y números\033[1;37m.\033[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
 
@@ -60,6 +61,10 @@ echo ""
 echo -ne "\033[1;32mNombre de usuario:\033[1;37m "
 read -r username
 [[ -z "$username" ]] && { echo -e "\n\033[1;31mNombre vacío.\033[0m\n"; exit 1; }
+if ! redlibre_rev_valid_login_name "$username"; then
+    echo -e "\n\033[1;31mNombre inválido: debe tener más de 3 caracteres y solo letras y números (sin símbolos ni espacios).\033[0m\n"
+    exit 1
+fi
 if id "$username" &>/dev/null; then
     echo -e "\n\033[41;1;37m Error: ¡El usuario ya existe! \033[0m\n"
     exit 1

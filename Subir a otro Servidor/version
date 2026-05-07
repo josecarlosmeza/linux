@@ -1,2 +1,2 @@
-1.0.0.10
-Revendedor: ignorar marcas basura (p.ej. usuario «0»=root) en monitor, informe y limitador
+1.0.0.11
+Reglas nombre usuario VPN: mas de 3 caracteres, solo letras y numeros (sin simbolos)

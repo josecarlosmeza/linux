@@ -68,6 +68,9 @@ echo ""
 # 1. Nombre de Usuario
 echo -ne "\033[1;32mNombre del Usuario\033[1;37m: " ; read nome
 [[ -z "$nome" ]] && error_exit "Nombre vacío o invalido."
+if [[ ${#nome} -le 3 ]] || [[ ! "$nome" =~ ^[a-zA-Z0-9]+$ ]]; then
+    error_exit "Nombre inválido: más de 3 caracteres y solo letras y números (sin símbolos)."
+fi
 # Comprobar si el usuario existe usando 'id -u'
 if id -u "$nome" &>/dev/null; then
     error_exit "Este usuário ya existe."

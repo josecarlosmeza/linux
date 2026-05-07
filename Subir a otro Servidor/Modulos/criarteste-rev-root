@@ -64,6 +64,9 @@ echo ""
 echo -ne "\033[1;32mNombre del usuario:\033[1;37m "
 read -r nome
 [[ -z "$nome" ]] && error_exit "Nombre vacío."
+if ! redlibre_rev_valid_login_name "$nome"; then
+    error_exit "Nombre inválido: más de 3 caracteres y solo letras y números (sin símbolos)."
+fi
 if id -u "$nome" &>/dev/null; then
     error_exit "Ese usuario ya existe."
 fi

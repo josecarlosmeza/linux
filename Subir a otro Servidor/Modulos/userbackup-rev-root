@@ -133,6 +133,10 @@ _import_rev() {
         u=$(echo "$line" | awk '{print $1}')
         lim=$(echo "$line" | awk '{print $2}')
         [[ -n "$u" ]] || continue
+        if ! redlibre_rev_valid_login_name "$u"; then
+            echo -e "\033[1;31m$u: nombre inválido (más de 3 caracteres, solo letras y números). Omitido.\033[0m"
+            continue
+        fi
         if ! [[ "$lim" =~ ^[1-9][0-9]*$ ]]; then
             echo -e "\033[1;33mLímite inválido para $u, se usa 1.\033[0m"
             lim=1
