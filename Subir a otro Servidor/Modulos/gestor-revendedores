@@ -7,7 +7,7 @@
     exit 1
 }
 
-CMDS="/usr/bin/true,/bin/true,/bin/criarusuario-rev-root,/bin/criarteste-rev-root,/bin/remover-rev-root,/bin/alterarsenha-rev-root,/bin/mudardata-rev-root,/bin/alterarlimite-rev-root,/bin/infousers-rev-root,/bin/userbackup-rev-root"
+CMDS="/usr/bin/true,/bin/true,/bin/criarusuario-rev-root,/bin/criarteste-rev-root,/bin/remover-rev-root,/bin/alterarsenha-rev-root,/bin/mudardata-rev-root,/bin/alterarlimite-rev-root,/bin/infousers-rev-root,/bin/userbackup-rev-root,/bin/expcleaner-rev-root,/bin/sshmonitor-rev-root"
 SFILE="/etc/sudoers.d/redlibre-revendedores"
 
 redlibre_rev_sudo_line() {

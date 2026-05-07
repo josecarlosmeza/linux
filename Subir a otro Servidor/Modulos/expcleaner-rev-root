@@ -1,0 +1,83 @@
+#!/bin/bash
+#====================================================
+# Eliminar usuarios expirados — solo clientes del revendedor
+# Mismo esquema visual que /bin/expcleaner (administrador)
+#====================================================
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+database="/root/usuarios.db"
+
+remove_ovp() {
+    if [[ -e /etc/debian_version ]]; then
+        GROUPNAME=nogroup
+    else
+        GROUPNAME=nobody
+    fi
+    user="$1"
+    cd /etc/openvpn/easy-rsa/ || return 0
+    ./easyrsa --batch revoke "$user" 2>/dev/null
+    ./easyrsa gen-crl 2>/dev/null
+    rm -rf "pki/reqs/$user.req" "pki/private/$user.key" "pki/issued/$user.crt"
+    [[ -e /etc/openvpn/crl.pem ]] && rm -f /etc/openvpn/crl.pem
+    cp pki/crl.pem /etc/openvpn/crl.pem 2>/dev/null
+    chown nobody:"$GROUPNAME" /etc/openvpn/crl.pem 2>/dev/null
+    [[ -e $HOME/$user.ovpn ]] && rm -f "$HOME/$user.ovpn"
+    [[ -e /var/www/html/openvpn/$user.zip ]] && rm -f "/var/www/html/openvpn/$user.zip"
+} >/dev/null 2>&1
+
+datenow=$(date +%s)
+
+clear
+echo -e "\E[44;1;37m Usuario          Fecha         Estado         Acción   \E[0m"
+echo ""
+
+while IFS= read -r user; do
+    [[ -z "$user" ]] && continue
+    redlibre_rev_owned "$user" || continue
+    id "$user" &>/dev/null || continue
+
+    expdate=$(LANG=en_US.UTF-8 chage -l "$user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$expdate" || "$expdate" == "never" ]] && continue
+
+    datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
+    [[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
+    tput setaf 3
+    tput bold
+    printf '%-15s%-17s%s' "$user" "$datanormal" ""
+    tput sgr0
+
+    expsec=$(date +%s --date="$expdate" 2>/dev/null || date +%s -d "$expdate" 2>/dev/null)
+    [[ -z "$expsec" ]] && echo " ERROR (fecha)" && continue
+
+    if [[ "$datenow" -lt "$expsec" ]]; then
+        tput setaf 2
+        tput bold
+        echo "VÁLIDO   NO REMOVIDO"
+        tput sgr0
+        continue
+    fi
+
+    tput setaf 1
+    tput bold
+    echo "EXPIRADO   ELIMINADO"
+    tput sgr0
+
+    pkill -u "$user" 2>/dev/null || true
+    userdel --force "$user" 2>/dev/null || true
+    [[ -f "$database" ]] && grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_exprev.$$ && mv /tmp/ph_exprev.$$ "$database"
+
+    if [[ -e /etc/openvpn/server.conf ]]; then
+        remove_ovp "$user"
+    fi
+    rm -f "/etc/RedLibre/senha/$user"
+    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
+    redlibre_rev_unregister_user "$user"
+done < <(redlibre_rev_list_owned)
+
+tput sgr0
+echo ""
+echo -ne "\033[1;33mPresione [ENTER] para volver...\033[0m"
+read -r
+
+exit 0

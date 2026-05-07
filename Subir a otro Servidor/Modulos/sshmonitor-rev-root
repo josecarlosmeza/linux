@@ -1,0 +1,50 @@
+#!/bin/bash
+#====================================================
+# Monitor en línea — solo clientes del revendedor
+# Mismo formato que /bin/sshmonitor (administrador)
+#====================================================
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+database="/root/usuarios.db"
+
+clear
+echo -e "\E[44;1;37m Usuario        Estado        Conexión        Tiempo   \E[0m"
+echo ""
+
+TOTAL_SESSIONS=0
+
+while IFS= read -r user_orig; do
+    [[ -z "$user_orig" ]] && continue
+    user="${user_orig//[[:space:]]/}"
+    redlibre_rev_owned "$user" || continue
+    id "$user" &>/dev/null || continue
+
+    limit=$(awk -v u="$user" '$1 == u { print $2; exit }' "$database" 2>/dev/null)
+    limit="${limit//[[:space:]]/}"
+    [[ -z "$limit" || ! "$limit" =~ ^[0-9]+$ ]] && limit=1
+
+    pids=$(pgrep -u "$user" sshd 2>/dev/null || true)
+    if [ -z "$pids" ]; then
+        session_count=0
+        status=$(echo -e "\033[1;31mOffline \033[1;33m       ")
+        timerr="00:00:00"
+    else
+        session_count=$(echo "$pids" | wc -l)
+        TOTAL_SESSIONS=$((TOTAL_SESSIONS + session_count))
+        oldest_pid=$(echo "$pids" | sort -n | head -n 1)
+        timerr=$(ps -o etime= -p "$oldest_pid" 2>/dev/null | tr -d '[:space:]')
+        [[ -z "$timerr" ]] && timerr="00:00:00"
+        status=$(echo -e "\033[1;32mOnline\033[1;33m         ")
+    fi
+
+    echo -ne "\033[1;33m"
+    printf '%-17s%-14s%-10s%s\n' " $user" "$status" "$session_count/$limit" "$timerr"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+done < <(redlibre_rev_list_owned)
+
+echo -e "\n\E[44;1;37m Sesiones Totales Activas: $TOTAL_SESSIONS \E[0m\n"
+echo -ne "\033[1;33mPresione [ENTER] para volver...\033[0m"
+read -r
+
+exit 0
