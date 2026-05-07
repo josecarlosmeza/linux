@@ -1,1 +1,3 @@
-1.0.2.1
+1.0.0.1
+Revendedores: sudo incluye /usr/bin/true y /bin/true para el panel sin contraseña
+Tras actualizar, root debe ejecutar Gestion revendedores opcion 5 si el panel del revendedor fallaba

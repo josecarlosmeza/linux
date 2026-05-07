@@ -10,9 +10,11 @@ if [[ ! -d "/etc/RedLibre/revendedores/$_RL_USER" ]]; then
 fi
 
 _redlibre_sudo() {
-    if ! sudo -n true 2>/dev/null; then
-        echo -e "\033[1;31mNo tiene permisos sudo configurados. El administrador debe crear su cuenta con «Gestión de revendedores».\033[0m"
-        sleep 3
+    if ! sudo -n /usr/bin/true 2>/dev/null && ! sudo -n /bin/true 2>/dev/null; then
+        echo -e "\033[1;31mNo hay sudo sin contraseña para este usuario.\033[0m"
+        echo -e "\033[1;37mEl administrador (root) debe abrir: Menú - Más (19) - Gestión de revendedores (31) - opción 5 (Regenerar permisos sudo).\033[0m"
+        echo -e "\033[1;37mTras actualizar los scripts en el servidor, ejecute de nuevo la opción 5.\033[0m"
+        sleep 4
         return 1
     fi
     sudo -n "$@"
