@@ -11,35 +11,66 @@ LITE_FLAG="/etc/RedLibre/torrent-lite.enabled"
 CHAIN="REDLIBRE_P2P"
 
 _detect_dev() {
-	ip -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
+	_resolve_tc_ip 2>/dev/null || true
+	local ipp="${IPPATH:-ip}"
+	"$ipp" -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
 }
 
+# Localizar tc/ip fuera del PATH (p. ej. sesiones sin /usr/sbin)
+_resolve_tc_ip() {
+	TCPATH=""
+	IPPATH=""
+	local p
+	for p in /usr/sbin/tc /sbin/tc /usr/bin/tc; do
+		[[ -f "$p" && -x "$p" ]] && TCPATH="$p" && break
+	done
+	[[ -z "$TCPATH" ]] && TCPATH=$(type -P tc 2>/dev/null || true)
+	for p in /usr/sbin/ip /sbin/ip /bin/ip /usr/bin/ip; do
+		[[ -f "$p" && -x "$p" ]] && IPPATH="$p" && break
+	done
+	[[ -z "$IPPATH" ]] && IPPATH=$(type -P ip 2>/dev/null || true)
+	[[ -n "$TCPATH" ]] && [[ -n "$IPPATH" ]]
+}
+
+_run_tc() { [[ -n "${TCPATH:-}" ]] || return 1; "$TCPATH" "$@"; }
+_run_ip() { [[ -n "${IPPATH:-}" ]] || return 1; "$IPPATH" "$@"; }
+
 _ensure_tools() {
-	if command -v tc &>/dev/null && command -v ip &>/dev/null; then
+	hash -r 2>/dev/null || true
+	if _resolve_tc_ip; then
+		export TCPATH IPPATH
 		return 0
 	fi
 	# Intento de instalación (requiere root)
 	if command -v dnf &>/dev/null; then
 		dnf install -y iproute iptables 2>&1
+		# En algunos RHEL/AlmaImages «tc» va en paquete separado
+		dnf install -y iproute-tc 2>/dev/null || true
 	elif command -v microdnf &>/dev/null; then
-		microdnf install -y iproute iptables 2>&1
+		microdnf install -y iproute iptables 2>&1 || true
+		microdnf install -y iproute-tc 2>/dev/null || true
 	elif command -v yum &>/dev/null; then
 		yum install -y iproute iptables 2>&1
+		yum install -y iproute-tc 2>/dev/null || true
 	elif command -v apt-get &>/dev/null; then
 		DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null
 		DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 iptables 2>&1
 	elif command -v apk &>/dev/null; then
 		apk add --no-cache iproute2 iptables 2>&1
 	fi
-	if command -v tc &>/dev/null && command -v ip &>/dev/null; then
+	hash -r 2>/dev/null || true
+	if _resolve_tc_ip; then
+		export TCPATH IPPATH
 		return 0
 	fi
 	echo ""
-	echo -e "\033[1;31mNo se encuentra el comando «tc» (traffic control).\033[0m"
-	echo -e "\033[1;33mInstálelo como root, por ejemplo:\033[0m"
-	echo "  • AlmaLinux / Rocky / RHEL:  dnf install -y iproute iptables"
-	echo "  • Debian / Ubuntu:          apt-get update && apt-get install -y iproute2 iptables"
-	echo "  • Alpine:                     apk add iproute2 iptables"
+	echo -e "\033[1;31mNo se encuentran los binarios de traffic control.\033[0m"
+	echo -e "\033[1;33mtc encontrado:\033[0m ${TCPATH:-**(no)**}    \033[1;33mip encontrado:\033[0m ${IPPATH:-**(no)**}"
+	echo -e "\033[1;33mComprueba como root:\033[0m ls -la /usr/sbin/tc /usr/sbin/ip"
+	echo -e "\033[1;33mInstalación típica:\033[0m"
+	echo "  • AlmaLinux / Rocky / RHEL 8+:  dnf install -y iproute iproute-tc iptables"
+	echo "  • Debian / Ubuntu:               apt-get update && apt-get install -y iproute2 iptables"
+	echo "  • Alpine:                        apk add iproute2 iptables"
 	echo ""
 	return 1
 }
@@ -86,30 +117,30 @@ EOF
 
 _remove_tc_dev() {
 	local d="$1"
-	tc qdisc del dev "$d" root 2>/dev/null
-	tc qdisc del dev "$d" ingress 2>/dev/null
+	_run_tc qdisc del dev "$d" root 2>/dev/null
+	_run_tc qdisc del dev "$d" ingress 2>/dev/null
 }
 
 _apply_egress() {
 	local dev="$1" mbit="$2"
 	[[ "$mbit" =~ ^[0-9]+$ ]] && [[ "$mbit" -ge 1 ]] || return 0
-	tc qdisc add dev "$dev" root handle 1: htb default 10
-	tc class add dev "$dev" parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
-	tc class add dev "$dev" parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
-	tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip src 0.0.0.0/0 flowid 1:10
+	_run_tc qdisc add dev "$dev" root handle 1: htb default 10
+	_run_tc class add dev "$dev" parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
+	_run_tc class add dev "$dev" parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
+	_run_tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip src 0.0.0.0/0 flowid 1:10
 }
 
 _apply_ingress() {
 	local dev="$1" mbit="$2"
 	[[ "$mbit" =~ ^[0-9]+$ ]] && [[ "$mbit" -ge 1 ]] || return 0
 	modprobe ifb numifbs=1 2>/dev/null
-	ip link set dev ifb0 up 2>/dev/null || return 1
-	tc qdisc add dev "$dev" handle ffff: ingress
-	tc filter add dev "$dev" parent ffff: protocol ip u32 match u32 0 0 action mirred egress redirect dev ifb0
-	tc qdisc add dev ifb0 root handle 1: htb default 10
-	tc class add dev ifb0 parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
-	tc class add dev ifb0 parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
-	tc filter add dev ifb0 parent 1: protocol ip prio 1 u32 match ip dst 0.0.0.0/0 flowid 1:10
+	_run_ip link set dev ifb0 up 2>/dev/null || return 1
+	_run_tc qdisc add dev "$dev" handle ffff: ingress
+	_run_tc filter add dev "$dev" parent ffff: protocol ip u32 match u32 0 0 action mirred egress redirect dev ifb0
+	_run_tc qdisc add dev ifb0 root handle 1: htb default 10
+	_run_tc class add dev ifb0 parent 1: classid 1:1 htb rate "${mbit}mbit" ceil "${mbit}mbit"
+	_run_tc class add dev ifb0 parent 1:1 classid 1:10 htb rate "${mbit}mbit" ceil "${mbit}mbit" prio 0
+	_run_tc filter add dev ifb0 parent 1: protocol ip prio 1 u32 match ip dst 0.0.0.0/0 flowid 1:10
 }
 
 tc_remove_all() {
@@ -117,7 +148,7 @@ tc_remove_all() {
 	[[ -z "$dev" ]] && return 1
 	_remove_tc_dev ifb0
 	_remove_tc_dev "$dev"
-	ip link set dev ifb0 down 2>/dev/null
+	_run_ip link set dev ifb0 down 2>/dev/null
 	modprobe -r ifb 2>/dev/null
 	return 0
 }
@@ -217,11 +248,16 @@ show_status() {
 	echo -e "\033[1;33mInterfaz por defecto:\033[0m $d"
 	echo ""
 	echo -e "\033[1;32mtc qdisc (\033[1;37m$d\033[1;32m):\033[0m"
-	tc qdisc show dev "$d" 2>/dev/null || echo "(vacío)"
-	echo ""
-	if tc qdisc show dev ifb0 &>/dev/null; then
-		echo -e "\033[1;32mtc qdisc (ifb0 — límite de bajada):\033[0m"
-		tc qdisc show dev ifb0
+	if _resolve_tc_ip 2>/dev/null; then
+		_run_tc qdisc show dev "$d" 2>/dev/null || echo "(vacío)"
+		echo ""
+		if _run_tc qdisc show dev ifb0 &>/dev/null; then
+			echo -e "\033[1;32mtc qdisc (ifb0 — límite de bajada):\033[0m"
+			_run_tc qdisc show dev ifb0
+			echo ""
+		fi
+	else
+		echo -e "(tc/ip no disponible — ejecute como root la opción 1 o:\033[0m dnf install -y iproute iproute-tc\033[0m)"
 		echo ""
 	fi
 	echo -e "\033[1;33mConfig:\033[0m $CONF"
@@ -270,6 +306,7 @@ menu_loop() {
 			sleep 2
 			;;
 		2)
+			_ensure_tools || { echo -e "\033[1;31mSin tc/ip no se pueden borrar las colas. Instale iproute/iproute-tc.\033[0m"; sleep 3; continue; }
 			_load_conf 2>/dev/null
 			tc_remove_all "${DEV:-$(_detect_dev)}"
 			systemctl disable redlibre-bw-restore.service 2>/dev/null

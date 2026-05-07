@@ -1,0 +1,90 @@
+#!/bin/bash
+#====================================================
+# Menú limitado — revendedor RedLibre (sin root)
+#====================================================
+[[ -f /etc/IP ]] && IP=$(cat /etc/IP) || IP="—"
+_RL_USER="$(id -un)"
+if [[ ! -d "/etc/RedLibre/revendedores/$_RL_USER" ]]; then
+    echo -e "\033[1;31mEsta cuenta no es revendedor autorizado.\033[0m"
+    exit 1
+fi
+
+_redlibre_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        echo -e "\033[1;31mNo tiene permisos sudo configurados. El administrador debe crear su cuenta con «Gestión de revendedores».\033[0m"
+        sleep 3
+        return 1
+    fi
+    sudo -n "$@"
+}
+
+while true; do
+    clear
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\E[44;1;37m   REDLIBRE — panel revendedor ($_RL_USER)   \E[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\033[1;36m IP del servidor: \033[1;37m$IP\033[0m"
+    _limf="/etc/RedLibre/revendedores/$_RL_USER/conf"
+    if [[ -f "$_limf" ]]; then
+        _lc=$(grep -E '^LIMITE_USUARIOS=' "$_limf" | head -1 | cut -d= -f2)
+        [[ "${_lc//[^0-9]/}" = "" ]] && _lc=0
+        _cnt=$(find "/etc/RedLibre/revendedores/$_RL_USER/usuarios" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l)
+        if [[ "$_lc" = "0" || -z "$_lc" ]]; then
+            echo -e "\033[1;36m Cupo SSH: \033[1;32msin límite \033[1;37m($_cnt creados)\033[0m"
+        else
+            echo -e "\033[1;36m Cupo SSH: \033[1;37m$_cnt / $_lc\033[0m"
+        fi
+    fi
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo ""
+    echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Crear usuario SSH"
+    echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Eliminar usuario"
+    echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Cambiar fecha de vencimiento"
+    echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Cambiar límite de conexiones"
+    echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Cambiar contraseña"
+    echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Informe de mis usuarios"
+    echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Backup / restaurar usuarios"
+    echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Salir"
+    echo ""
+    echo -ne "\033[1;32mOpción: \033[1;37m"
+    read -r _op
+    case "$_op" in
+        1)
+            clear
+            _redlibre_sudo /bin/criarusuario-rev-root || true
+            ;;
+        2)
+            clear
+            _redlibre_sudo /bin/remover-rev-root || true
+            ;;
+        3)
+            clear
+            _redlibre_sudo /bin/mudardata-rev-root || true
+            ;;
+        4)
+            clear
+            _redlibre_sudo /bin/alterarlimite-rev-root || true
+            ;;
+        5)
+            clear
+            _redlibre_sudo /bin/alterarsenha-rev-root || true
+            ;;
+        6)
+            clear
+            _redlibre_sudo /bin/infousers-rev-root || true
+            ;;
+        7)
+            clear
+            _redlibre_sudo /bin/userbackup-rev-root || true
+            ;;
+        0|00)
+            clear
+            echo -e "\033[1;32mHasta luego.\033[0m"
+            exit 0
+            ;;
+        *)
+            echo -e "\033[1;31mOpción no válida.\033[0m"
+            sleep 1
+            ;;
+    esac
+done

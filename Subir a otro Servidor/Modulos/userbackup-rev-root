@@ -1,0 +1,228 @@
+#!/bin/bash
+#====================================================
+# Backup / restauración — solo cuentas del revendedor
+# Archivo por defecto: ~/redlibre-rev-backup.vps (home del revendedor)
+# Compatible: mismas líneas que /root/usuarios.db y archivos en senha/
+#====================================================
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+REV_HOME=$(getent passwd "$REV" | cut -d: -f6)
+[[ -n "$REV_HOME" && -d "$REV_HOME" ]] || REV_HOME="/home/$REV"
+DEF_BACKUP="$REV_HOME/redlibre-rev-backup.vps"
+DB_MAIN="/root/usuarios.db"
+
+_redlibre_rev_expiry_ymd() {
+    local u="$1"
+    local raw
+    raw=$(LANG=en_US.UTF-8 chage -l "$u" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "$raw" || "$raw" == "never" ]]; then
+        echo "never"
+        return 0
+    fi
+    date -d "$raw" '+%Y-%m-%d' 2>/dev/null || date --date="$raw" '+%Y-%m-%d' 2>/dev/null || echo ""
+}
+
+_redlibre_rev_other_owner() {
+    local u="$1"
+    local rev_dir o
+    shopt -s nullglob
+    for rev_dir in /etc/RedLibre/revendedores/*; do
+        [[ -d "$rev_dir" ]] || continue
+        o=$(basename "$rev_dir")
+        [[ "$o" == "$REV" ]] && continue
+        [[ -f "$rev_dir/usuarios/$u" ]] && { echo "$o"; shopt -u nullglob; return 0; }
+    done
+    shopt -u nullglob
+    echo ""
+    return 1
+}
+
+_export_rev() {
+    local tmp u line
+    tmp=$(mktemp -d) || exit 1
+    mkdir -p "$tmp/senha"
+
+    _userlist=$(redlibre_rev_list_owned)
+    if [[ -z "$_userlist" ]]; then
+        echo -e "\033[1;33mNo tiene usuarios para respaldar.\033[0m"
+        rm -rf "$tmp"
+        read -r -p "Pulse ENTER..."
+        return 0
+    fi
+
+    : >"$tmp/usuarios.db"
+    : >"$tmp/expiry.txt"
+
+    while read -r u; do
+        [[ -z "$u" ]] && continue
+        line=$(grep "^${u}[[:space:]]" "$DB_MAIN" 2>/dev/null | head -1)
+        if [[ -z "$line" ]]; then
+            line="$u 1"
+            echo -e "\033[1;33mAviso: $u no estaba en usuarios.db; se usa «$u 1».\033[0m"
+        fi
+        echo "$line" >>"$tmp/usuarios.db"
+        if [[ -f "/etc/RedLibre/senha/$u" ]]; then
+            cp "/etc/RedLibre/senha/$u" "$tmp/senha/$u"
+        else
+            echo -e "\033[1;33mAviso: sin contraseña almacenada para $u.\033[0m"
+        fi
+        _e=$(_redlibre_rev_expiry_ymd "$u")
+        echo "${u}|${_e}" >>"$tmp/expiry.txt"
+    done <<< "$_userlist"
+
+    echo "1" >"$tmp/.redlibre_rev_backup_version"
+    echo "revendedor|${REV}|$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" >"$tmp/.redlibre_rev_backup_info"
+
+    if ! tar -cf "$DEF_BACKUP" -C "$tmp" \
+        usuarios.db senha expiry.txt .redlibre_rev_backup_version .redlibre_rev_backup_info 2>/dev/null; then
+        echo -e "\033[1;31mError al crear el archivo tar.\033[0m"
+        rm -rf "$tmp"
+        read -r -p "Pulse ENTER..."
+        return 1
+    fi
+    rm -rf "$tmp"
+    chown "${REV}:${REV}" "$DEF_BACKUP" 2>/dev/null || true
+    chmod 600 "$DEF_BACKUP" 2>/dev/null || true
+
+    echo -e "\033[1;32mRespaldo creado:\033[0m \033[1;37m$DEF_BACKUP\033[0m"
+    read -r -p "Pulse ENTER..."
+}
+
+_import_rev() {
+    local tmp src u lim pass expry other
+    echo -ne "\033[1;32mRuta del respaldo [\033[1;37m$DEF_BACKUP\033[1;32m]:\033[1;37m "
+    read -r src
+    [[ -z "$src" ]] && src="$DEF_BACKUP"
+    [[ -f "$src" ]] || {
+        echo -e "\033[1;31mNo existe: $src\033[0m"
+        read -r -p "Pulse ENTER..."
+        return 1
+    }
+
+    tmp=$(mktemp -d) || exit 1
+    if ! tar -xf "$src" -C "$tmp" 2>/dev/null; then
+        echo -e "\033[1;31mNo se pudo leer el archivo (¿es un .vps/tar válido?).\033[0m"
+        rm -rf "$tmp"
+        read -r -p "Pulse ENTER..."
+        return 1
+    fi
+
+    if [[ ! -f "$tmp/usuarios.db" ]] || [[ ! -d "$tmp/senha" ]]; then
+        echo -e "\033[1;31mFormato inválido: faltan usuarios.db o carpeta senha/.\033[0m"
+        rm -rf "$tmp"
+        read -r -p "Pulse ENTER..."
+        return 1
+    fi
+
+    [[ ! -f "$DB_MAIN" ]] && touch "$DB_MAIN"
+    [[ ! -d /etc/RedLibre/senha ]] && mkdir -p /etc/RedLibre/senha
+
+    declare -A EXPMAP
+    if [[ -f "$tmp/expiry.txt" ]]; then
+        while IFS='|' read -r _u _e; do
+            [[ -n "$_u" ]] && EXPMAP["$_u"]="$_e"
+        done <"$tmp/expiry.txt"
+    fi
+
+    local _lim_cfg _cur
+    _lim_cfg=$(redlibre_rev_limit)
+
+    while read -r line; do
+        [[ -z "$line" ]] && continue
+        u=$(echo "$line" | awk '{print $1}')
+        lim=$(echo "$line" | awk '{print $2}')
+        [[ -n "$u" ]] || continue
+        if ! [[ "$lim" =~ ^[1-9][0-9]*$ ]]; then
+            echo -e "\033[1;33mLímite inválido para $u, se usa 1.\033[0m"
+            lim=1
+        fi
+
+        other=$(_redlibre_rev_other_owner "$u")
+        if [[ -n "$other" ]]; then
+            echo -e "\033[1;31m$u pertenece a otro revendedor ($other). Omitido.\033[0m"
+            continue
+        fi
+
+        if id "$u" &>/dev/null; then
+            if ! redlibre_rev_owned "$u"; then
+                echo -e "\033[1;31m$u existe y no es suyo. Omitido.\033[0m"
+                continue
+            fi
+        else
+            if [[ "$_lim_cfg" -gt 0 ]]; then
+                _cur=$(redlibre_rev_count_owned)
+                if [[ "$_cur" -ge "$_lim_cfg" ]]; then
+                    echo -e "\033[1;31mCupo agotado: no se crea $u.\033[0m"
+                    continue
+                fi
+            fi
+        fi
+
+        pass=""
+        [[ -f "$tmp/senha/$u" ]] && pass=$(cat "$tmp/senha/$u" | tr -d '\r\n')
+        if [[ -z "$pass" ]]; then
+            echo -e "\033[1;31mSin contraseña en respaldo para $u. Omitido.\033[0m"
+            continue
+        fi
+
+        expry="${EXPMAP[$u]:-}"
+        if [[ -z "$expry" || "$expry" == "never" ]]; then
+            if id "$u" &>/dev/null; then
+                expry="$(_redlibre_rev_expiry_ymd "$u")"
+            fi
+            [[ -z "$expry" || "$expry" == "never" ]] && expry=$(date -d "+30 days" '+%Y-%m-%d')
+        fi
+        if [[ "$expry" == "never" ]]; then
+            expry=$(date -d "+3650 days" '+%Y-%m-%d')
+        fi
+
+        if id "$u" &>/dev/null; then
+            echo "$u:$pass" | chpasswd
+            chage -E "$expry" "$u" 2>/dev/null || true
+        else
+            useradd -e "$expry" -M -s /bin/false "$u" >/dev/null 2>&1 || {
+                echo -e "\033[1;31mNo se pudo crear $u.\033[0m"
+                continue
+            }
+            echo "$u:$pass" | chpasswd
+        fi
+
+        echo "$pass" >"/etc/RedLibre/senha/$u"
+        chmod 600 "/etc/RedLibre/senha/$u" 2>/dev/null || true
+        grep -v "^${u}[[:space:]]" "$DB_MAIN" > /tmp/udb_imp.$$
+        cat /tmp/udb_imp.$$ >"$DB_MAIN"
+        rm -f /tmp/udb_imp.$$
+        echo "$u $lim" >>"$DB_MAIN"
+        redlibre_rev_register_user "$u"
+        echo -e "\033[1;32mOK:\033[0m $u"
+    done <"$tmp/usuarios.db"
+
+    rm -rf "$tmp"
+    echo -e "\033[1;32mImportación finalizada.\033[0m"
+    read -r -p "Pulse ENTER..."
+}
+
+clear
+tput setaf 7
+tput setab 4
+tput bold
+printf '%36s%s%-8s\n' " Backup / restaurar (revendedor) "
+tput sgr0
+echo ""
+echo -e "\033[1;37mArchivo predeterminado:\033[0m"
+echo -e "  \033[1;33m$DEF_BACKUP\033[0m"
+echo ""
+echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Exportar mis usuarios"
+echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Importar usuarios desde respaldo"
+echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver"
+echo ""
+echo -ne "\033[1;32mOpción: \033[1;37m"
+read -r _op
+case "$_op" in
+    1) _export_rev ;;
+    2) _import_rev ;;
+    0|00|"") exit 0 ;;
+    *) echo -e "\033[1;31mOpción no válida.\033[0m"; sleep 1 ;;
+esac
+exit 0

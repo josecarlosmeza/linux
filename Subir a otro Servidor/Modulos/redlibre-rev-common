@@ -1,0 +1,53 @@
+#====================================================
+# RedLibre — funciones comunes para scripts de revendedor (root + SUDO_USER)
+#====================================================
+redlibre_rev_fail() {
+    echo -e "\033[1;31m$1\033[0m"
+    [[ -n "${2:-}" ]] && read -r -p "" _
+    exit 1
+}
+
+redlibre_rev_init() {
+    [[ $EUID -eq 0 ]] || redlibre_rev_fail "Error interno: se requiere root."
+    REV="${SUDO_USER:-}"
+    [[ -n "$REV" ]] || redlibre_rev_fail "No se pudo determinar el revendedor (use sudo desde su usuario)."
+    [[ -d "/etc/RedLibre/revendedores/$REV" ]] || redlibre_rev_fail "Esta cuenta no está registrada como revendedor."
+}
+
+redlibre_rev_owned() {
+    [[ -f "/etc/RedLibre/revendedores/$REV/usuarios/$1" ]]
+}
+
+redlibre_rev_limit() {
+    local conf="/etc/RedLibre/revendedores/$REV/conf"
+    local lim
+    [[ -f "$conf" ]] && lim="$(grep -E '^LIMITE_USUARIOS=' "$conf" | head -1 | cut -d= -f2)"
+    lim="${lim//[^0-9]/}"
+    [[ -z "$lim" ]] && lim=0
+    echo "$lim"
+}
+
+redlibre_rev_count_owned() {
+    find "/etc/RedLibre/revendedores/$REV/usuarios" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l
+}
+
+redlibre_rev_list_owned() {
+    shopt -s nullglob
+    local f
+    local -a _arr=()
+    for f in /etc/RedLibre/revendedores/"$REV"/usuarios/*; do
+        [[ -f "$f" ]] && _arr+=("$(basename "$f")")
+    done
+    shopt -u nullglob
+    ((${#_arr[@]})) && printf '%s\n' "${_arr[@]}" | sort
+}
+
+redlibre_rev_register_user() {
+    local u="$1"
+    mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
+    : > "/etc/RedLibre/revendedores/$REV/usuarios/$u"
+}
+
+redlibre_rev_unregister_user() {
+    rm -f "/etc/RedLibre/revendedores/$REV/usuarios/$1"
+}

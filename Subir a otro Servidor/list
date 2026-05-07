@@ -24,6 +24,7 @@ if command -v timedatectl &>/dev/null; then timedatectl set-timezone America/Sao
 [[ ! -d /etc/bot/info-users ]] && mkdir /etc/bot/info-users
 [[ ! -d /etc/bot/arquivos ]] && mkdir /etc/bot/arquivos
 [[ ! -d /etc/bot/revenda ]] && mkdir /etc/bot/revenda
+[[ ! -d /etc/RedLibre/revendedores ]] && mkdir -p /etc/RedLibre/revendedores
 [[ ! -d /etc/bot/suspensos ]] && mkdir /etc/bot/suspensos
 [[ ! -e /etc/bot/lista_ativos ]] && touch /etc/bot/lista_ativos
 [[ ! -e /etc/bot/lista_suspensos ]] && touch /etc/bot/lista_suspensos
@@ -38,11 +39,16 @@ echo "PasswordAuthentication yes" >>/etc/ssh/sshd_config
 _dir1='/bin'
 _dir2='/etc/RedLibre'
 rm -f $_dir2/ShellBot.sh $_dir2/cabecalho $_dir2/open.py $_dir2/proxy.py >/dev/null 2>&1
-_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py")
+_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py" "gestor-revendedores" "menu-revendedor" "redlibre-rev-common" "criarusuario-rev-root" "remover-rev-root" "alterarsenha-rev-root" "mudardata-rev-root" "alterarlimite-rev-root" "infousers-rev-root" "userbackup-rev-root")
 for _arq in ${_mdls[@]}; do
 	[[ -e $_dir1/$_arq ]] && rm $_dir1/$_arq >/dev/null 2>&1
-	wget -c -P $_dir1 https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq
-	chmod +x $_dir1/$_arq
+	if [[ "$_arq" == "redlibre-rev-common" ]]; then
+		wget -c -O /etc/RedLibre/redlibre-rev-common "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
+		chmod 644 /etc/RedLibre/redlibre-rev-common 2>/dev/null || true
+	else
+		wget -c -P $_dir1 https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq
+		chmod +x $_dir1/$_arq
+	fi
 done
 mv $_dir1/cabecalho $_dir1/bot $_dir1/open.py $_dir1/proxy.py $_dir2
 _arq_host="/etc/hosts"

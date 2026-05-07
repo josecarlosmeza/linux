@@ -1,0 +1,96 @@
+#!/bin/bash
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+_db="/root/usuarios.db"
+
+clear
+echo -e "\E[44;1;37m (Revendedor) Usuario   Contraseña    Límite   Vencimiento  \E[0m"
+echo ""
+
+for users in $(redlibre_rev_list_owned); do
+    [[ $(grep -cw "$users" "$_db") == "1" ]] && lim=$(grep -w "$users" "$_db" | cut -d' ' -f2) || lim="1"
+    [[ -e "/etc/RedLibre/senha/$users" ]] && senha=$(cat "/etc/RedLibre/senha/$users") || senha="Null"
+    conexiones=$(ps -u "$users" 2>/dev/null | grep -c sshd || true)
+
+    datauser=$(LANG=en_US.UTF-8 chage -l "$users" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "$datauser" || "$datauser" == "never" ]]; then
+        data="\033[1;33mNunca\033[0m"
+    else
+        fecha_venc=$(date --date="$datauser" '+%d/%m/%Y' 2>/dev/null || date -d "$datauser" '+%d/%m/%Y' 2>/dev/null)
+        exp_sec=$(date +%s --date="$datauser" 2>/dev/null || date +%s -d "$datauser" 2>/dev/null)
+        now_sec=$(date +%s)
+        if [[ -n "$exp_sec" ]]; then
+            if [[ $now_sec -ge $exp_sec ]]; then
+                data="\033[1;31m$fecha_venc (Expirado)\033[0m"
+            else
+                dias=$(( (exp_sec - now_sec) / 86400 ))
+                data="\033[1;32m$fecha_venc ($dias d)\033[0m"
+            fi
+        else
+            data="\033[1;37m$fecha_venc\033[0m"
+        fi
+    fi
+
+    if [[ "$conexiones" -gt 0 ]]; then
+        Usuario=$(printf ' %-15s' "$users ($conexiones)")
+    else
+        Usuario=$(printf ' %-15s' "$users")
+    fi
+    Senha=$(printf '%-13s' "$senha")
+    Limite=$(printf '%-10s' "$lim")
+
+    echo -e "\033[1;33m$Usuario \033[1;37m$Senha \033[1;37m$Limite \033[1;37m$data\033[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+done
+
+_n=$(redlibre_rev_list_owned | grep -c . || true)
+_onli=$(ps aux 2>/dev/null | grep sshd | grep -v root | grep -v grep | wc -l)
+echo -e "\n\033[1;33m• \033[1;36mTUS USUARIOS:\033[1;37m $_n  \033[1;33m• \033[1;32mSSH en servidor (global):\033[1;37m $_onli \033[1;33m•\033[0m\n"
+
+echo -ne "\033[1;37mNombre para detalles o [\033[1;32mEnter\033[1;37m] salir: \033[1;33m"
+read -r selection
+
+if [[ -n "$selection" ]]; then
+    if ! redlibre_rev_owned "$selection"; then
+        echo -e "\n\033[1;31mEse usuario no es suyo.\033[0m"
+        sleep 2
+    elif id "$selection" >/dev/null 2>&1; then
+        clear
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "\E[44;1;37m        DETALLES: $selection      \E[0m"
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        d_conexiones=$(ps -u "$selection" -o comm,etime 2>/dev/null | grep sshd | awk '{print $2}')
+        num_con=$(echo "$d_conexiones" | wc -w)
+        if [[ $num_con -gt 0 ]]; then
+            d_estado="\033[1;32mCONECTADO\033[0m"
+            tiempos=$(echo "$d_conexiones" | xargs 2>/dev/null | sed 's/ / | /g')
+        else
+            d_estado="\033[1;31mDESCONECTADO\033[0m"
+            tiempos="N/A"
+        fi
+        [[ -e /etc/RedLibre/senha/$selection ]] && d_pass=$(cat "/etc/RedLibre/senha/$selection") || d_pass="Null"
+        d_val_raw=$(LANG=en_US.UTF-8 chage -l "$selection" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ -z "$d_val_raw" || "$d_val_raw" == "never" ]]; then
+            d_val="Nunca"
+        else
+            d_val=$(date --date="$d_val_raw" '+%d/%m/%Y' 2>/dev/null || date -d "$d_val_raw" '+%d/%m/%Y' 2>/dev/null)
+            [[ -z "$d_val" ]] && d_val="$d_val_raw"
+        fi
+        echo -e "\033[1;36m USUARIO:     \033[1;37m$selection"
+        echo -e "\033[1;36m ESTADO VPN:  $d_estado"
+        echo -e "\033[1;36m SESIONES:    \033[1;37m$num_con"
+        echo -e "\033[1;36m TIEMPO/S:    \033[1;33m$tiempos"
+        echo -e "\033[1;36m CONTRASEÑA:  \033[1;37m$d_pass"
+        echo -e "\033[1;36m VENCIMIENTO: \033[1;37m$d_val"
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo ""
+        read -p "Presione [Enter] para salir..."
+    else
+        echo -e "\n\033[1;31mEl usuario no existe en el sistema.\033[0m"
+        sleep 2
+    fi
+fi
+clear
+
+exit 0

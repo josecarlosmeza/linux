@@ -1,0 +1,80 @@
+#!/bin/bash
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+tput setaf 7
+tput setab 4
+tput bold
+printf '%20s%s\n' "   Cambiar límite (revendedor)   "
+tput sgr0
+database="/root/usuarios.db"
+
+declare -A LIMITES
+i=0
+if [[ -f "$database" ]]; then
+    while IFS=" " read -r user limit other; do
+        [[ -n "$user" ]] && LIMITES["$user"]="$limit"
+    done < "$database"
+else
+    echo -e "\033[1;31mNo existe $database\033[0m"
+    exit 1
+fi
+
+echo ""
+echo -e "\033[1;33mSUS USUARIOS:\033[0m"
+echo ""
+
+_userT=$(redlibre_rev_list_owned)
+unset _userPass
+
+while read -r _user; do
+    [[ -z "$_user" ]] && continue
+    ((i++)) || true
+    limit="${LIMITES[$_user]:-1}"
+    if [[ $i -lt 10 ]]; then i_display="0$i"; else i_display="$i"; fi
+    l_user=$(echo -e "\033[1;31m[\033[1;36m$i_display\033[1;31m] \033[1;37m- \033[1;32m$_user\033[0m")
+    lim=$(echo -e "\033[1;33mLímite\033[1;37m: $limit")
+    printf '%-65s%s\n' "$l_user" "$lim"
+    _userPass+=$'\n'"${i_display}:${_user}"
+done <<< "$_userT"
+
+if [[ $i -eq 0 ]]; then
+    echo -e "\033[1;31mNo tiene usuarios.\033[0m"
+    sleep 2
+    exit 0
+fi
+
+echo ""
+echo -ne "\033[1;32mNúmero o nombre de usuario:\033[1;37m "
+read -r option
+
+if [[ "$option" =~ ^[0-9]+$ ]]; then
+    usuario=$(printf '%s\n' "$_userPass" | grep -E "^0*${option}:" | head -1 | cut -d: -f2)
+else
+    usuario="$option"
+fi
+
+if [[ -z $option || -z $usuario ]] || ! redlibre_rev_owned "$usuario"; then
+    echo -e "\n\033[1;31mSelección inválida.\033[0m\n"
+    exit 1
+fi
+if ! grep -qw "$usuario" /etc/passwd; then
+    echo -e "\n\033[1;31mUsuario no encontrado.\033[0m\n"
+    exit 1
+fi
+
+echo -ne "\n\033[1;32mNuevo límite para \033[1;33m$usuario\033[1;37m: "
+read -r sshnum
+
+if ! [[ "$sshnum" =~ ^[1-9][0-9]*$ ]]; then
+    echo -e "\n\033[1;31mNúmero inválido.\033[0m\n"
+    exit 1
+fi
+
+grep -v "^$usuario[[:space:]]" "$database" > /tmp/usuarios_db_temp_rev
+mv /tmp/usuarios_db_temp_rev "$database"
+echo "$usuario $sshnum" >> "$database"
+
+echo -e "\n\033[1;32mLímite aplicado: $usuario → $sshnum\033[0m\n"
+sleep 2
+exit 0

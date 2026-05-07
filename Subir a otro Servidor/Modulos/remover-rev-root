@@ -1,0 +1,83 @@
+#!/bin/bash
+remove_ovp () {
+    GROUPNAME=nobody
+    if [[ -e /etc/debian_version ]]; then
+        GROUPNAME=nogroup
+    fi
+    user="$1"
+    cd /etc/openvpn/easy-rsa/ || return 0
+    ./easyrsa --batch revoke "$user" 2>/dev/null
+    ./easyrsa gen-crl 2>/dev/null
+    rm -rf "pki/reqs/$user.req" "pki/private/$user.key" "pki/issued/$user.crt"
+    [[ -e /etc/openvpn/crl.pem ]] && rm -f /etc/openvpn/crl.pem
+    cp pki/crl.pem /etc/openvpn/crl.pem 2>/dev/null
+    chown nobody:"$GROUPNAME" /etc/openvpn/crl.pem 2>/dev/null
+    [[ -e $HOME/$user.ovpn ]] && rm -f "$HOME/$user.ovpn"
+    [[ -e /var/www/html/openvpn/$user.zip ]] && rm -f "/var/www/html/openvpn/$user.zip"
+} &>/dev/null
+
+[[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+redlibre_rev_init
+
+database="/root/usuarios.db"
+clear
+tput setaf 7
+tput setab 4
+tput bold
+printf '%32s%s%-13s\n' "Eliminar usuario SSH (revendedor)"
+tput sgr0
+echo ""
+
+_userT=$(redlibre_rev_list_owned)
+if [[ -z "$_userT" ]]; then
+    echo -e "\033[1;31mNo tiene usuarios creados.\033[0m"
+    sleep 2
+    exit 0
+fi
+
+echo -e "\033[1;33mSUS USUARIOS:\033[0m"
+echo ""
+i=0
+unset _userPass
+while read -r _user; do
+    [[ -z "$_user" ]] && continue
+    i=$((i + 1))
+    if [[ $i -lt 10 ]]; then i_display="0$i"; else i_display="$i"; fi
+    echo -e "\033[1;31m[\033[1;36m$i_display\033[1;31m] \033[1;37m- \033[1;32m$_user\033[0m"
+    _userPass+=$'\n'"${i_display}:${_user}"
+done <<< "$_userT"
+
+echo ""
+echo -ne "\033[1;32mSeleccione número o nombre de usuario:\033[1;37m "
+read -r option
+[[ -z "$option" ]] && exit 1
+
+if [[ "$option" =~ ^[0-9]+$ ]]; then
+    user=$(printf '%s\n' "$_userPass" | grep -E "^0*${option}:" | head -1 | cut -d: -f2)
+else
+    user="$option"
+fi
+
+if ! redlibre_rev_owned "$user"; then
+    echo -e "\n\033[1;31mEse usuario no pertenece a su revendedor o no existe.\033[0m\n"
+    sleep 2
+    exit 1
+fi
+
+if id "$user" &>/dev/null; then
+    pkill -f "$user" >/dev/null 2>&1
+    userdel --force "$user" >/dev/null 2>&1
+    echo -e "\n\E[41;1;37m Usuario $user eliminado. \E[0m\n"
+    grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
+    rm -f "/etc/RedLibre/senha/$user"
+    redlibre_rev_unregister_user "$user"
+    [[ -e /etc/openvpn/server.conf ]] && remove_ovp "$user"
+else
+    grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
+    rm -f "/etc/RedLibre/senha/$user"
+    redlibre_rev_unregister_user "$user"
+    echo -e "\n\033[1;33mUsuario $user retirado de la base (no existía en el sistema).\033[0m\n"
+fi
+
+sleep 2
+exit 0
