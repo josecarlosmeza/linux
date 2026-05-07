@@ -36,6 +36,7 @@ while IFS= read -r user; do
     [[ -z "$user" ]] && continue
     redlibre_rev_owned "$user" || continue
     id "$user" &>/dev/null || continue
+    redlibre_rev_is_managed_vpn_user "$user" || continue
 
     expdate=$(LANG=en_US.UTF-8 chage -l "$user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -z "$expdate" || "$expdate" == "never" ]] && continue

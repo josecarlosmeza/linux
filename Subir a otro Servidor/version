@@ -1,2 +1,2 @@
-1.0.0.9
-Panel revendedor: eliminar expirados y monitor en linea (solo sus clientes)
+1.0.0.10
+Revendedor: ignorar marcas basura (p.ej. usuario «0»=root) en monitor, informe y limitador

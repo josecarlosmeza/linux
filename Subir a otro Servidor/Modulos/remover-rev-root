@@ -64,19 +64,27 @@ if ! redlibre_rev_owned "$user"; then
     exit 1
 fi
 
+_cleanup_markers() {
+    grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
+    rm -f "/etc/RedLibre/senha/$user"
+    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
+    redlibre_rev_unregister_user "$user"
+}
+
 if id "$user" &>/dev/null; then
-    pkill -f "$user" >/dev/null 2>&1
-    userdel --force "$user" >/dev/null 2>&1
-    echo -e "\n\E[41;1;37m Usuario $user eliminado. \E[0m\n"
-    grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
-    rm -f "/etc/RedLibre/senha/$user"
-    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
-    redlibre_rev_unregister_user "$user"
+    _ruid=$(id -u "$user")
+    if [[ "$_ruid" -lt 1000 ]]; then
+        echo -e "\n\033[1;33m«$user» no es un cliente VPN (UID $_ruid). Se limpia solo la marca de su cartera.\033[0m\n"
+        _cleanup_markers
+    else
+        pkill -f "$user" >/dev/null 2>&1
+        userdel --force "$user" >/dev/null 2>&1
+        echo -e "\n\E[41;1;37m Usuario $user eliminado. \E[0m\n"
+        _cleanup_markers
+    fi
 else
-    grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
-    rm -f "/etc/RedLibre/senha/$user"
-    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
-    redlibre_rev_unregister_user "$user"
+    echo -e "\n\033[1;33mNo hay cuenta Unix «$user»; se quita de su cartera y de usuarios.db.\033[0m\n"
+    _cleanup_markers
 fi
 
 sleep 2

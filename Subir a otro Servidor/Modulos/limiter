@@ -90,6 +90,8 @@ while true; do
         for _mf in "$_rev_path/usuarios"/*; do
             [[ -f "$_mf" ]] || continue
             _un=$(basename "$_mf")
+            id "$_un" &>/dev/null || continue
+            [[ $(id -u "$_un" 2>/dev/null) -ge 1000 ]] || continue
             _rev_users+=("$_un")
             _c=$(get_active_session_count "$_un")
             _tot=$((_tot + _c))

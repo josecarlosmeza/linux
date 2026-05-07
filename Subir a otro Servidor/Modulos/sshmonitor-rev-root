@@ -19,6 +19,7 @@ while IFS= read -r user_orig; do
     user="${user_orig//[[:space:]]/}"
     redlibre_rev_owned "$user" || continue
     id "$user" &>/dev/null || continue
+    redlibre_rev_is_managed_vpn_user "$user" || continue
 
     limit=$(awk -v u="$user" '$1 == u { print $2; exit }' "$database" 2>/dev/null)
     limit="${limit//[[:space:]]/}"

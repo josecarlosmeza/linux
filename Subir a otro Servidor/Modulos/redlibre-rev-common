@@ -18,6 +18,16 @@ redlibre_rev_owned() {
     [[ -f "/etc/RedLibre/revendedores/$REV/usuarios/$1" ]]
 }
 
+# Cliente VPN creado por RedLibre (UID local >= 1000). Evita entradas basura en
+# revendedores/.../usuarios/ cuyo nombre es solo número: p. ej. «0» hace que
+# id/pgrep interpreten UID 0 (root) y el monitor muestre sesiones falsas.
+redlibre_rev_is_managed_vpn_user() {
+    local u="$1" uid
+    [[ -z "$u" ]] && return 1
+    uid=$(id -u "$u" 2>/dev/null) || return 1
+    [[ "$uid" -ge 1000 ]]
+}
+
 redlibre_rev_limit() {
     local conf="/etc/RedLibre/revendedores/$REV/conf"
     local lim
