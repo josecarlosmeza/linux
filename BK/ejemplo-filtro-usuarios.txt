@@ -1,0 +1,5 @@
+# Opcional: un nombre de usuario por línea; solo estos pasan al .vps del revendedor.
+# Si no usa filtro, entran todos los que figuren en usuarios.db del backup.
+#
+# cliente1
+# cliente2

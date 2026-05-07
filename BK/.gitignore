@@ -1,0 +1,5 @@
+*.vps
+*.VPS
+backup.*
+*.tar
+*.tar.gz
