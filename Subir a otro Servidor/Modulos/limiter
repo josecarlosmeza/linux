@@ -77,6 +77,42 @@ while true; do
         fi
         
     done < "$database"
-    
+
+    # --- Tope global de sesiones SSH para todos los usuarios de un revendedor ---
+    shopt -s nullglob
+    for _rev_path in /etc/RedLibre/revendedores/*; do
+        [[ -d "$_rev_path/usuarios" ]] || continue
+        _max_tot=$(grep -E '^MAX_SESIONES_TOTAL_REVENDEDOR=' "$_rev_path/conf" 2>/dev/null | head -1 | cut -d= -f2)
+        _max_tot="${_max_tot//[^0-9]/}"
+        [[ -z "$_max_tot" || "$_max_tot" -eq 0 ]] && continue
+        _tot=0
+        _rev_users=()
+        for _mf in "$_rev_path/usuarios"/*; do
+            [[ -f "$_mf" ]] || continue
+            _un=$(basename "$_mf")
+            _rev_users+=("$_un")
+            _c=$(get_active_session_count "$_un")
+            _tot=$((_tot + _c))
+        done
+        if [[ "$_tot" -gt "$_max_tot" ]]; then
+            ALL_ACTIVE_PIDS=$(
+                for _un in "${_rev_users[@]}"; do
+                    tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" |
+                    grep -E 'Accepted password|Password auth succeeded|session opened' |
+                    grep -w "$_un" |
+                    sed -E -e '/dropbear/! s/.*sshd\[([0-9]+)\].*/\1/g' -e '/sshd/! s/.*dropbear\[([0-9]+)\].*/\1/g'
+                done | tr '\n' ' ' | tr -s ' ' '\n' | grep -v '^$' | sort -nr | while read -r pid; do
+                    ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
+                done
+            )
+            PID_TO_KILL=$(echo "$ALL_ACTIVE_PIDS" | head -1)
+            if [[ -n "$PID_TO_KILL" ]]; then
+                kill "$PID_TO_KILL" 2>/dev/null
+                echo "$(date): KILLED PID $PID_TO_KILL reseller global limit ($_tot/$_max_tot) path $_rev_path" >> "$LOG_KILL_FILE"
+            fi
+        fi
+    done
+    shopt -u nullglob
+
     sleep $SLEEP_TIME # Esperar 10 segundos antes de la siguiente verificación
 done

@@ -1,3 +1,4 @@
-1.0.0.1
-Revendedores: sudo incluye /usr/bin/true y /bin/true para el panel sin contraseña
-Tras actualizar, root debe ejecutar Gestion revendedores opcion 5 si el panel del revendedor fallaba
+1.0.0.2
+Revendedores: usuarios de prueba (duracion y sesiones fijadas por admin)
+Tope de sesiones por usuario normal y tope global de sesiones (limitador)
+Gestion revendedores opcion 6: editar politicas; opcion 5 pone conf legible (644)

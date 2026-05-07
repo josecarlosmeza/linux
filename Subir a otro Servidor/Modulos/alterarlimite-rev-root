@@ -70,6 +70,11 @@ if ! [[ "$sshnum" =~ ^[1-9][0-9]*$ ]]; then
     echo -e "\n\033[1;31mNúmero inválido.\033[0m\n"
     exit 1
 fi
+_cap=$(redlibre_rev_max_sesiones_usuario)
+if [[ "$_cap" -gt 0 ]] && [[ "$sshnum" -gt "$_cap" ]]; then
+    echo -e "\n\033[1;31mEl administrador permite como máximo $_cap sesión(es) por usuario.\033[0m\n"
+    exit 1
+fi
 
 grep -v "^$usuario[[:space:]]" "$database" > /tmp/usuarios_db_temp_rev
 mv /tmp/usuarios_db_temp_rev "$database"

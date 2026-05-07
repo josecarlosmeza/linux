@@ -51,3 +51,42 @@ redlibre_rev_register_user() {
 redlibre_rev_unregister_user() {
     rm -f "/etc/RedLibre/revendedores/$REV/usuarios/$1"
 }
+
+# Lee clave del conf del revendedor actual. Uso: redlibre_rev_conf_get CLAVE [defecto]
+redlibre_rev_conf_get() {
+    local key="$1" def="${2:-}"
+    local conf="/etc/RedLibre/revendedores/$REV/conf"
+    local v
+    [[ -f "$conf" ]] || { echo "$def"; return 0; }
+    v=$(grep -E "^${key}=" "$conf" 2>/dev/null | head -1 | cut -d= -f2-)
+    v="${v%$'\r'}"
+    [[ -z "$v" ]] && v="$def"
+    printf '%s' "$v"
+}
+
+# Tope de sesiones SSH concurrentes por usuario (normales); 0 = sin tope administrativo
+redlibre_rev_max_sesiones_usuario() {
+    local v
+    v=$(redlibre_rev_conf_get "MAX_SESIONES_POR_USUARIO" "0")
+    v="${v//[^0-9]/}"
+    [[ -z "$v" ]] && v=0
+    echo "$v"
+}
+
+# Minutos de vida del usuario de prueba (fija el admin)
+redlibre_rev_prueba_minutos() {
+    local v
+    v=$(redlibre_rev_conf_get "PRUEBA_MINUTOS" "60")
+    v="${v//[^0-9]/}"
+    [[ -z "$v" || "$v" -eq 0 ]] && v=60
+    echo "$v"
+}
+
+# Límite de sesiones concurrentes para cada usuario de prueba
+redlibre_rev_prueba_sesiones() {
+    local v
+    v=$(redlibre_rev_conf_get "PRUEBA_SESIONES" "1")
+    v="${v//[^0-9]/}"
+    [[ -z "$v" || "$v" -eq 0 ]] && v=1
+    echo "$v"
+}

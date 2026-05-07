@@ -70,13 +70,13 @@ if id "$user" &>/dev/null; then
     echo -e "\n\E[41;1;37m Usuario $user eliminado. \E[0m\n"
     grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
     rm -f "/etc/RedLibre/senha/$user"
+    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
     redlibre_rev_unregister_user "$user"
-    [[ -e /etc/openvpn/server.conf ]] && remove_ovp "$user"
 else
     grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
     rm -f "/etc/RedLibre/senha/$user"
+    rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
     redlibre_rev_unregister_user "$user"
-    echo -e "\n\033[1;33mUsuario $user retirado de la base (no existía en el sistema).\033[0m\n"
 fi
 
 sleep 2

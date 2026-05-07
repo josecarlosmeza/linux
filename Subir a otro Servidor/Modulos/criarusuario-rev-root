@@ -29,7 +29,9 @@ tput bold
 printf '%30s%s%-15s\n' "Crear usuario SSH (revendedor)"
 tput sgr0
 echo ""
-echo -ne "\033[1;32mNombre de usuario:\033[1;37m "
+_cap=$(redlibre_rev_max_sesiones_usuario)
+[[ "$_cap" -gt 0 ]] && echo -e "\033[1;36mTope de sesiones por usuario (admin): \033[1;37m$_cap\033[0m"
+echo ""
 read -r username
 [[ -z "$username" ]] && { echo -e "\n\033[1;31mNombre vacío.\033[0m\n"; exit 1; }
 if id "$username" &>/dev/null; then
@@ -53,6 +55,11 @@ fi
 if ! [[ "$sshlimiter" =~ ^[1-9][0-9]*$ ]]; then
     echo -e "\n\033[1;31mLímite de conexiones inválido.\033[0m\n"
     exit 1
+fi
+_cap=$(redlibre_rev_max_sesiones_usuario)
+if [[ "$_cap" -gt 0 ]] && [[ "$sshlimiter" -gt "$_cap" ]]; then
+    echo -e "\n\033[1;33mTope del administrador: máx. $_cap sesión(es). Se usa ese valor.\033[0m"
+    sshlimiter="$_cap"
 fi
 
 final=$(date "+%Y-%m-%d" -d "+$dias days")
