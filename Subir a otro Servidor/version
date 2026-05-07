@@ -1,4 +1,3 @@
-1.0.0.2
-Revendedores: usuarios de prueba (duracion y sesiones fijadas por admin)
-Tope de sesiones por usuario normal y tope global de sesiones (limitador)
-Gestion revendedores opcion 6: editar politicas; opcion 5 pone conf legible (644)
+1.0.0.3
+Revendedores SSH: grupo redlibre-rev y ForceCommand al panel (sin shell remoto libre)
+Script revendedor-sshd-lock; home 750; tras actualizar ejecutar gestor opcion 5

@@ -50,6 +50,7 @@ while true; do
         [[ "${_mxu:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope sesiones/usuario: \033[1;37m$_mxu\033[0m"
         [[ "${_mxt:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope total sesiones (sus clientes): \033[1;37m$_mxt\033[0m"
     fi
+    echo -e "\033[1;36m Sesión SSH limitada al panel (sin shell ni comandos remotos).\033[0m"
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo ""
     echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Crear usuario SSH"

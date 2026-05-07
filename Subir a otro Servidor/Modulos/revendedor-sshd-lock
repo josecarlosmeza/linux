@@ -1,0 +1,40 @@
+#!/bin/bash
+#====================================================
+# RedLibre — bloqueo SSH para revendedores (solo panel, sin shell remoto)
+# Ejecutar como root. Crea grupo redlibre-rev y fragmento sshd_config.d
+#====================================================
+[[ $EUID -eq 0 ]] || exit 1
+
+getent group redlibre-rev >/dev/null 2>&1 || groupadd -r redlibre-rev 2>/dev/null || groupadd redlibre-rev
+
+mkdir -p /etc/ssh/sshd_config.d
+f=/etc/ssh/sshd_config.d/50-redlibre-revendedores.conf
+
+cat >"$f" << 'EOF'
+# RedLibre — miembros de «redlibre-rev» no obtienen shell/libre: solo /bin/menu-revendedor
+# (no se aplica scp/rsync remoto con este usuario; use consola o root si necesita copiar archivos)
+Match Group redlibre-rev
+    ForceCommand /bin/menu-revendedor
+    PermitTTY yes
+EOF
+chmod 644 "$f"
+
+shopt -s nullglob
+for _d in /etc/RedLibre/revendedores/*; do
+    [[ -d "$_d" ]] || continue
+    _u=$(basename "$_d")
+    id "$_u" &>/dev/null || continue
+    id -nG "$_u" 2>/dev/null | tr ' ' '\n' | grep -qx redlibre-rev && continue
+    usermod -aG redlibre-rev "$_u" 2>/dev/null || true
+done
+shopt -u nullglob
+
+if command -v sshd >/dev/null 2>&1; then
+    if sshd -t 2>/dev/null; then
+        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service sshd reload 2>/dev/null || service ssh reload 2>/dev/null || true
+    else
+        echo "redlibre: sshd -t falló; revise $f antes de reiniciar sshd." >&2
+        exit 1
+    fi
+fi
+exit 0
