@@ -9,10 +9,6 @@
 }
 redlibre_rev_init
 
-for pkg in perl curl; do
-    command -v "$pkg" >/dev/null 2>&1 || { command -v dnf >/dev/null 2>&1 && dnf install -y "$pkg"; } || { command -v yum >/dev/null 2>&1 && yum install -y "$pkg"; }
-done
-
 [[ ! -d /etc/RedLibre/senha ]] && mkdir -p /etc/RedLibre/senha
 [[ ! -f /root/usuarios.db ]] && touch /root/usuarios.db
 
@@ -96,9 +92,14 @@ final=$(date "+%Y-%m-%d" -d "+$dias days" 2>/dev/null || date "+%Y-%m-%d" --date
 gui=$(date "+%d/%m/%Y" -d "+$dias days" 2>/dev/null || date "+%d/%m/%Y" --date="+$dias days")
 hora_cambio=$(date "+%H:%M:%S")
 
-pass=$(perl -e 'print crypt($ARGV[0], "password")' "$password")
-if ! useradd -e "$final" -M -s /bin/false -p "$pass" "$username" >/dev/null 2>&1; then
+# Mismo criterio que importación y criarteste-rev: chpasswd (hash del sistema, sin límite DES de crypt "password")
+if ! useradd -e "$final" -M -s /bin/false "$username" >/dev/null 2>&1; then
     echo -e "\n\033[41;1;37m Fallo al crear el usuario. \033[0m\n"
+    exit 1
+fi
+if ! echo "$username:$password" | chpasswd 2>/dev/null; then
+    userdel --force "$username" 2>/dev/null || true
+    echo -e "\n\033[41;1;37m Fallo al establecer la contraseña (chpasswd). \033[0m\n"
     exit 1
 fi
 

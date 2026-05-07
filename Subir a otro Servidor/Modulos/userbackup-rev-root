@@ -164,7 +164,10 @@ _import_rev() {
         fi
 
         pass=""
-        [[ -f "$tmp/senha/$u" ]] && pass=$(cat "$tmp/senha/$u" | tr -d '\r\n')
+        if [[ -f "$tmp/senha/$u" ]]; then
+            IFS= read -r pass <"$tmp/senha/$u" || pass=""
+            pass="${pass//$'\r'/}"
+        fi
         if [[ -z "$pass" ]]; then
             echo -e "\033[1;31mSin contraseña en respaldo para $u. Omitido.\033[0m"
             continue
@@ -182,21 +185,33 @@ _import_rev() {
         fi
 
         if id "$u" &>/dev/null; then
-            echo "$u:$pass" | chpasswd
+            if ! echo "$u:$pass" | chpasswd 2>/dev/null; then
+                echo -e "\033[1;31mchpasswd falló para $u (¿contraseña vacía o no permitida?).\033[0m"
+                continue
+            fi
             chage -E "$expry" "$u" 2>/dev/null || true
         else
             useradd -e "$expry" -M -s /bin/false "$u" >/dev/null 2>&1 || {
                 echo -e "\033[1;31mNo se pudo crear $u.\033[0m"
                 continue
             }
-            echo "$u:$pass" | chpasswd
+            if ! echo "$u:$pass" | chpasswd 2>/dev/null; then
+                userdel --force "$u" 2>/dev/null || true
+                echo -e "\033[1;31mchpasswd falló para $u recién creado; usuario eliminado.\033[0m"
+                continue
+            fi
         fi
+
+        # Desbloquear por si caducidad-rev o política dejó la cuenta bloqueada (! en shadow)
+        passwd -u "$u" 2>/dev/null || true
+        usermod -U "$u" 2>/dev/null || true
 
         echo "$pass" >"/etc/RedLibre/senha/$u"
         chmod 600 "/etc/RedLibre/senha/$u" 2>/dev/null || true
-        grep -v "^${u}[[:space:]]" "$DB_MAIN" > /tmp/udb_imp.$$
-        cat /tmp/udb_imp.$$ >"$DB_MAIN"
-        rm -f /tmp/udb_imp.$$
+        _udb_tmp=$(mktemp) || exit 1
+        grep -v "^${u}[[:space:]]" "$DB_MAIN" >"$_udb_tmp" || true
+        cat "$_udb_tmp" >"$DB_MAIN"
+        rm -f "$_udb_tmp"
         echo "$u $lim" >>"$DB_MAIN"
         redlibre_rev_register_user "$u"
         echo -e "\033[1;32mOK:\033[0m $u"

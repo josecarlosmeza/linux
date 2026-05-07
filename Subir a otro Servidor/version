@@ -1,2 +1,2 @@
-1.0.0.14
-sshmonitor-rev-root: detección Online con ps+sshd (no pgrep -u); expcleaner-rev-root: expiración con chage y comparación por fecha calendario
+1.0.0.15
+criarusuario-rev-root: crear con useradd+chpasswd (hash del sistema); userbackup-rev: desbloqueo tras import y chpasswd con comprobación de error
