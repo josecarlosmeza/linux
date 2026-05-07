@@ -1,2 +1,2 @@
-1.0.0.11
-Reglas nombre usuario VPN: mas de 3 caracteres, solo letras y numeros (sin simbolos)
+1.0.0.12
+Caducidad cuenta revendedor: FECHA_FIN, panel dias restantes, bloqueo clientes, gestor crear/editar

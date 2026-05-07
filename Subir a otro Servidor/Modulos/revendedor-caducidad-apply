@@ -1,0 +1,80 @@
+#!/bin/bash
+#====================================================
+# Aplica caducidad de cuentas revendedor: bloqueo de
+# login revendedor y de todos sus clientes VPN (UID>=1000).
+# Desbloquea si el admin amplía FECHA_FIN o la elimina.
+# Invocado por el limitador (root). Idempotente.
+#====================================================
+[[ $EUID -eq 0 ]] || exit 0
+
+today=$(date +%Y-%m-%d)
+
+_redlibre_unlock_rev() {
+    local revlogin="$1" revdir="$2"
+    passwd -u "$revlogin" 2>/dev/null || true
+    usermod -U "$revlogin" 2>/dev/null || true
+    shopt -s nullglob
+    for f in "$revdir/usuarios"/*; do
+        [[ -f "$f" ]] || continue
+        local u
+        u=$(basename "$f")
+        id "$u" &>/dev/null || continue
+        local _uid
+        _uid=$(id -u "$u" 2>/dev/null)
+        [[ "$_uid" -ge 1000 ]] || continue
+        passwd -u "$u" 2>/dev/null || true
+        usermod -U "$u" 2>/dev/null || true
+    done
+    shopt -u nullglob
+}
+
+_redlibre_lock_rev() {
+    local revlogin="$1" revdir="$2"
+    passwd -l "$revlogin" 2>/dev/null || true
+    usermod -L "$revlogin" 2>/dev/null || true
+    shopt -s nullglob
+    for f in "$revdir/usuarios"/*; do
+        [[ -f "$f" ]] || continue
+        local u
+        u=$(basename "$f")
+        id "$u" &>/dev/null || continue
+        local _uid
+        _uid=$(id -u "$u" 2>/dev/null)
+        [[ "$_uid" -ge 1000 ]] || continue
+        passwd -l "$u" 2>/dev/null || true
+        usermod -L "$u" 2>/dev/null || true
+    done
+    shopt -u nullglob
+}
+
+shopt -s nullglob
+for revdir in /etc/RedLibre/revendedores/*; do
+    [[ -d "$revdir/usuarios" ]] || continue
+    revlogin=$(basename "$revdir")
+    conf="$revdir/conf"
+    ff=$(grep -m1 -E '^FECHA_FIN_REVENDEDOR=' "$conf" 2>/dev/null | cut -d= -f2-)
+    ff="${ff//$'\r'/}"
+    ff="${ff//[[:space:]]/}"
+    stamp="$revdir/.caducidad_aplicada"
+
+    if [[ -z "$ff" ]]; then
+        if [[ -f "$stamp" ]]; then
+            _redlibre_unlock_rev "$revlogin" "$revdir"
+            rm -f "$stamp"
+        fi
+        continue
+    fi
+
+    if [[ "$today" > "$ff" ]]; then
+        _redlibre_lock_rev "$revlogin" "$revdir"
+        : >"$stamp"
+    else
+        if [[ -f "$stamp" ]]; then
+            _redlibre_unlock_rev "$revlogin" "$revdir"
+            rm -f "$stamp"
+        fi
+    fi
+done
+shopt -u nullglob
+
+exit 0

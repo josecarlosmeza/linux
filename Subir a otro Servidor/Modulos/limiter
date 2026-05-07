@@ -116,5 +116,7 @@ while true; do
     done
     shopt -u nullglob
 
+    [[ -x /bin/revendedor-caducidad-apply ]] && /bin/revendedor-caducidad-apply
+
     sleep $SLEEP_TIME # Esperar 10 segundos antes de la siguiente verificación
 done
