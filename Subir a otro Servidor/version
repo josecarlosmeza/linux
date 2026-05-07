@@ -1,2 +1,2 @@
-1.0.0.13
-Fix redlibre-rev-common (evitar = command not found) y fallback is_managed_vpn en scripts rev
+1.0.0.14
+sshmonitor-rev-root: detección Online con ps+sshd (no pgrep -u); expcleaner-rev-root: expiración con chage y comparación por fecha calendario
