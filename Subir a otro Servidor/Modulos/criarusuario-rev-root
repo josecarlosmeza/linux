@@ -29,9 +29,6 @@ tput bold
 printf '%30s%s%-15s\n' "Crear usuario SSH (revendedor)"
 tput sgr0
 echo ""
-_cap=$(redlibre_rev_max_sesiones_usuario)
-[[ "$_cap" -gt 0 ]] && echo -e "\033[1;36mTope de sesiones por usuario (admin): \033[1;37m$_cap\033[0m"
-echo ""
 read -r username
 [[ -z "$username" ]] && { echo -e "\n\033[1;31mNombre vacío.\033[0m\n"; exit 1; }
 if id "$username" &>/dev/null; then
