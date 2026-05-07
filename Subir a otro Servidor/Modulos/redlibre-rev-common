@@ -18,31 +18,37 @@ redlibre_rev_owned() {
     [[ -f "/etc/RedLibre/revendedores/$REV/usuarios/$1" ]]
 }
 
-# Nombre de usuario VPN: longitud > 3; solo letras y números (sin espacios, guiones ni símbolos).
+# Nombre de usuario VPN: longitud > 3; solo letras y numeros.
 redlibre_rev_valid_login_name() {
-    local u="$1"
+    local u
+    u="$1"
     [[ -n "$u" ]] || return 1
     [[ ${#u} -gt 3 ]] || return 1
     [[ "$u" =~ ^[a-zA-Z0-9]+$ ]] || return 1
     return 0
 }
 
-# Cliente VPN creado por RedLibre (UID local >= 1000). Evita entradas basura en
-# revendedores/.../usuarios/ cuyo nombre es solo número: p. ej. «0» hace que
-# id/pgrep interpreten UID 0 (root) y el monitor muestre sesiones falsas.
+# Cliente VPN (UID local >= 1000). Evita marcas tipo "0" que resuelven a root.
 redlibre_rev_is_managed_vpn_user() {
-    local u="$1" uid
-    [[ -z "$u" ]] && return 1
+    local u
+    local uid
+    u="$1"
+    [[ -n "$u" ]] || return 1
     uid=$(id -u "$u" 2>/dev/null) || return 1
-    [[ "$uid" -ge 1000 ]]
+    [[ "$uid" -ge 1000 ]] || return 1
+    return 0
 }
 
 redlibre_rev_limit() {
-    local conf="/etc/RedLibre/revendedores/$REV/conf"
+    local conf
     local lim
+    conf="/etc/RedLibre/revendedores/$REV/conf"
+    lim=""
     [[ -f "$conf" ]] && lim="$(grep -E '^LIMITE_USUARIOS=' "$conf" | head -1 | cut -d= -f2)"
     lim="${lim//[^0-9]/}"
-    [[ -z "$lim" ]] && lim=0
+    if [[ -z "$lim" ]]; then
+        lim="0"
+    fi
     echo "$lim"
 }
 
@@ -58,11 +64,14 @@ redlibre_rev_list_owned() {
         [[ -f "$f" ]] && _arr+=("$(basename "$f")")
     done
     shopt -u nullglob
-    ((${#_arr[@]})) && printf '%s\n' "${_arr[@]}" | sort
+    if ((${#_arr[@]})); then
+        printf '%s\n' "${_arr[@]}" | sort
+    fi
 }
 
 redlibre_rev_register_user() {
-    local u="$1"
+    local u
+    u="$1"
     mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
     : > "/etc/RedLibre/revendedores/$REV/usuarios/$u"
 }
@@ -73,39 +82,54 @@ redlibre_rev_unregister_user() {
 
 # Lee clave del conf del revendedor actual. Uso: redlibre_rev_conf_get CLAVE [defecto]
 redlibre_rev_conf_get() {
-    local key="$1" def="${2:-}"
-    local conf="/etc/RedLibre/revendedores/$REV/conf"
+    local key
+    local def
+    local conf
     local v
-    [[ -f "$conf" ]] || { echo "$def"; return 0; }
+    key="$1"
+    def="${2:-}"
+    conf="/etc/RedLibre/revendedores/$REV/conf"
+    if [[ ! -f "$conf" ]]; then
+        printf '%s' "$def"
+        return 0
+    fi
     v=$(grep -E "^${key}=" "$conf" 2>/dev/null | head -1 | cut -d= -f2-)
     v="${v%$'\r'}"
-    [[ -z "$v" ]] && v="$def"
+    if [[ -z "$v" ]]; then
+        v="$def"
+    fi
     printf '%s' "$v"
 }
 
-# Tope de sesiones SSH concurrentes por usuario (normales); 0 = sin tope administrativo
 redlibre_rev_max_sesiones_usuario() {
     local v
-    v=$(redlibre_rev_conf_get "MAX_SESIONES_POR_USUARIO" "0")
-    v="${v//[^0-9]/}"
-    [[ -z "$v" ]] && v=0
+    local raw
+    raw=$(redlibre_rev_conf_get "MAX_SESIONES_POR_USUARIO" "0")
+    v="${raw//[^0-9]/}"
+    if [[ -z "$v" ]]; then
+        v="0"
+    fi
     echo "$v"
 }
 
-# Minutos de vida del usuario de prueba (fija el admin)
 redlibre_rev_prueba_minutos() {
     local v
-    v=$(redlibre_rev_conf_get "PRUEBA_MINUTOS" "60")
-    v="${v//[^0-9]/}"
-    [[ -z "$v" || "$v" -eq 0 ]] && v=60
+    local raw
+    raw=$(redlibre_rev_conf_get "PRUEBA_MINUTOS" "60")
+    v="${raw//[^0-9]/}"
+    if [[ -z "$v" || "$v" -eq 0 ]]; then
+        v="60"
+    fi
     echo "$v"
 }
 
-# Límite de sesiones concurrentes para cada usuario de prueba
 redlibre_rev_prueba_sesiones() {
     local v
-    v=$(redlibre_rev_conf_get "PRUEBA_SESIONES" "1")
-    v="${v//[^0-9]/}"
-    [[ -z "$v" || "$v" -eq 0 ]] && v=1
+    local raw
+    raw=$(redlibre_rev_conf_get "PRUEBA_SESIONES" "1")
+    v="${raw//[^0-9]/}"
+    if [[ -z "$v" || "$v" -eq 0 ]]; then
+        v="1"
+    fi
     echo "$v"
 }

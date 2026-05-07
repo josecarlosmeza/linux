@@ -1,2 +1,2 @@
-1.0.0.12
-Caducidad cuenta revendedor: FECHA_FIN, panel dias restantes, bloqueo clientes, gestor crear/editar
+1.0.0.13
+Fix redlibre-rev-common (evitar = command not found) y fallback is_managed_vpn en scripts rev
