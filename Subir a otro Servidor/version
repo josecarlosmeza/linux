@@ -1,2 +1,2 @@
-1.0.0.16
-redlibre-rev-common: detectar revendedor (SUDO_UID/logname), conteo cupo sin espacios, redlibre_rev_set_password_plain (chpasswd + openssl/usermod). criarusuario-rev: useradd con log de error, shell false/nologin, contraseña vía helper. Import/cambiar clave/prueba alineados.
+1.0.0.17
+criarusuario-rev-root: lecturas desde /dev/tty (evita stdin vacío con sudo+SSH), saneado CR/espacios, pausa antes de salir con error, fallback si falta set_password en common
