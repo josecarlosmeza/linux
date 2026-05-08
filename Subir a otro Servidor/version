@@ -1,2 +1,2 @@
-1.0.0.19
-criarteste-rev-root: mismos fallbacks que crear usuario (valid_login, register, set_password, prueba_*), lectura /dev/tty, cupo normalizado, pausa en errores
+1.0.0.20
+userbackup-rev-root: fallbacks valid_login_name, register_user, set_password_plain si common viejo; cupo import normalizado; mensaje mínimo 4 caracteres
