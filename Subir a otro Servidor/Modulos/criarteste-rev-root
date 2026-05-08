@@ -1,9 +1,70 @@
 #!/bin/bash
 #====================================================
 # Usuario de prueba — revendedor (sudo). Duración y sesiones: conf del admin.
+# Lectura por /dev/tty si hace falta (sudo+SSH). Fallbacks si common está incompleto.
 #====================================================
 [[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+
+if ! declare -F redlibre_rev_valid_login_name >/dev/null 2>&1; then
+    redlibre_rev_valid_login_name() {
+        local u="$1"
+        [[ -n "$u" ]] || return 1
+        [[ ${#u} -gt 3 ]] || return 1
+        [[ "$u" =~ ^[a-zA-Z0-9]+$ ]] || return 1
+        return 0
+    }
+fi
+if ! declare -F redlibre_rev_register_user >/dev/null 2>&1; then
+    redlibre_rev_register_user() {
+        local u="$1"
+        mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
+        : >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+    }
+fi
+if ! declare -F redlibre_rev_set_password_plain >/dev/null 2>&1; then
+    redlibre_rev_set_password_plain() {
+        local u="$1" p="$2" h
+        [[ -n "$u" && -n "$p" ]] || return 1
+        id "$u" &>/dev/null || return 1
+        if printf '%s\n' "${u}:${p}" | chpasswd 2>/dev/null; then
+            return 0
+        fi
+        if command -v openssl >/dev/null 2>&1; then
+            h=$(printf '%s\n' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
+            if [[ -z "$h" ]]; then
+                h=$(openssl passwd -6 "$p" 2>/dev/null) || h=""
+            fi
+            if [[ -n "$h" ]] && usermod -p "$h" "$u" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        return 1
+    }
+fi
+if ! declare -F redlibre_rev_prueba_minutos >/dev/null 2>&1; then
+    redlibre_rev_prueba_minutos() { echo "60"; }
+fi
+if ! declare -F redlibre_rev_prueba_sesiones >/dev/null 2>&1; then
+    redlibre_rev_prueba_sesiones() { echo "1"; }
+fi
+
 redlibre_rev_init
+
+_redlibre_read_tty() {
+    if [[ -r /dev/tty ]]; then
+        read -r "$@" < /dev/tty
+    else
+        read -r "$@"
+    fi
+}
+
+_redlibre_strip_input() {
+    local s="$1"
+    s="${s//$'\r'/}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
 
 IP=$(cat /etc/IP 2>/dev/null || echo "—")
 TEST_DIR="/etc/RedLibre/userteste"
@@ -14,6 +75,10 @@ NOLOGIN_SHELL="/usr/sbin/nologin"
 
 _pr_min=$(redlibre_rev_prueba_minutos)
 _pr_ses=$(redlibre_rev_prueba_sesiones)
+_pr_min="${_pr_min//[[:space:]]/}"
+_pr_ses="${_pr_ses//[[:space:]]/}"
+[[ -z "$_pr_min" || "$_pr_min" -lt 1 ]] && _pr_min=60
+[[ -z "$_pr_ses" || "$_pr_ses" -lt 1 ]] && _pr_ses=1
 
 error_exit() {
     echo ""
@@ -28,6 +93,12 @@ error_exit() {
         rm -f "$PASS_DIR/$nome" "${TEST_DIR}/${nome}.sh" 2>/dev/null
         rm -f "/etc/RedLibre/revendedores/$REV/usuarios/$nome" 2>/dev/null
     fi
+    echo -ne "\033[1;33mPulse [ENTER] para volver al menú...\033[0m"
+    if [[ -r /dev/tty ]]; then
+        read -r < /dev/tty
+    else
+        read -r
+    fi
     exit 1
 }
 
@@ -38,8 +109,14 @@ fi
 
 _lim=$(redlibre_rev_limit)
 _cnt=$(redlibre_rev_count_owned)
+_lim="${_lim//[[:space:]]/}"
+_cnt="${_cnt//[[:space:]]/}"
+[[ -z "$_lim" ]] && _lim=0
+[[ -z "$_cnt" ]] && _cnt=0
 if [[ "$_lim" -gt 0 ]] && [[ "$_cnt" -ge "$_lim" ]]; then
     echo -e "\n\033[41;1;37m Límite de usuarios alcanzado ($_lim). \033[0m\n"
+    echo -ne "\033[1;33mPulse [ENTER] para volver al menú...\033[0m"
+    if [[ -r /dev/tty ]]; then read -r < /dev/tty; else read -r; fi
     exit 1
 fi
 
@@ -62,17 +139,19 @@ else
 fi
 echo ""
 echo -ne "\033[1;32mNombre del usuario:\033[1;37m "
-read -r nome
-[[ -z "$nome" ]] && error_exit "Nombre vacío."
+_redlibre_read_tty nome
+nome=$(_redlibre_strip_input "$nome")
+[[ -z "$nome" ]] && error_exit "Nombre vacío (¿consola/TTY?)."
 if ! redlibre_rev_valid_login_name "$nome"; then
-    error_exit "Nombre inválido: más de 3 caracteres y solo letras y números (sin símbolos)."
+    error_exit "Nombre inválido: mínimo 4 caracteres y solo letras y números (sin símbolos)."
 fi
 if id -u "$nome" &>/dev/null; then
     error_exit "Ese usuario ya existe."
 fi
 
 echo -ne "\033[1;32mContraseña:\033[1;37m "
-read -r pass
+_redlibre_read_tty pass
+pass=$(_redlibre_strip_input "$pass")
 [[ -z "$pass" ]] && error_exit "Contraseña vacía."
 
 limit="$_pr_ses"
@@ -117,5 +196,5 @@ echo -e "\033[1;37m$nome:$pass\033[0m"
 echo ""
 echo -e "\033[1;33mTras ese tiempo el usuario se eliminará solo.\033[0m"
 echo -ne "\033[1;33m[ENTER]\033[0m"
-read -r
+_redlibre_read_tty _
 exit 0

@@ -1,2 +1,2 @@
-1.0.0.18
-criarusuario-rev-root: fallback redlibre_rev_valid_login_name y register_user si common del servidor está incompleto
+1.0.0.19
+criarteste-rev-root: mismos fallbacks que crear usuario (valid_login, register, set_password, prueba_*), lectura /dev/tty, cupo normalizado, pausa en errores
