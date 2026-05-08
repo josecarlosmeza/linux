@@ -1,2 +1,2 @@
-1.0.0.20
-userbackup-rev-root: fallbacks valid_login_name, register_user, set_password_plain si common viejo; cupo import normalizado; mensaje mínimo 4 caracteres
+1.0.0.21
+Usuario prueba (rev): el revendedor elige minutos y sesiones; límites = PRUEBA_* y el más estricto con MAX_SESIONES_POR_USUARIO. Textos admin/menú aclaran «tope máx.».

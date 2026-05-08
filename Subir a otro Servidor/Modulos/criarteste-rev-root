@@ -1,6 +1,6 @@
 #!/bin/bash
 #====================================================
-# Usuario de prueba — revendedor (sudo). Duración y sesiones: conf del admin.
+# Usuario de prueba — revendedor (sudo). Elige duración y sesiones dentro del tope del admin.
 # Lectura por /dev/tty si hace falta (sudo+SSH). Fallbacks si common está incompleto.
 #====================================================
 [[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
@@ -47,6 +47,9 @@ fi
 if ! declare -F redlibre_rev_prueba_sesiones >/dev/null 2>&1; then
     redlibre_rev_prueba_sesiones() { echo "1"; }
 fi
+if ! declare -F redlibre_rev_max_sesiones_usuario >/dev/null 2>&1; then
+    redlibre_rev_max_sesiones_usuario() { echo "0"; }
+fi
 
 redlibre_rev_init
 
@@ -73,12 +76,21 @@ PASS_DIR="/etc/RedLibre/senha"
 NOLOGIN_SHELL="/usr/sbin/nologin"
 [[ -x "$NOLOGIN_SHELL" ]] || NOLOGIN_SHELL="/sbin/nologin"
 
-_pr_min=$(redlibre_rev_prueba_minutos)
-_pr_ses=$(redlibre_rev_prueba_sesiones)
-_pr_min="${_pr_min//[[:space:]]/}"
-_pr_ses="${_pr_ses//[[:space:]]/}"
-[[ -z "$_pr_min" || "$_pr_min" -lt 1 ]] && _pr_min=60
-[[ -z "$_pr_ses" || "$_pr_ses" -lt 1 ]] && _pr_ses=1
+_max_min=$(redlibre_rev_prueba_minutos)
+_max_ses_prueba=$(redlibre_rev_prueba_sesiones)
+_max_min="${_max_min//[[:space:]]/}"
+_max_ses_prueba="${_max_ses_prueba//[[:space:]]/}"
+[[ -z "$_max_min" || "$_max_min" -lt 1 ]] && _max_min=60
+[[ -z "$_max_ses_prueba" || "$_max_ses_prueba" -lt 1 ]] && _max_ses_prueba=1
+
+_cap_u=$(redlibre_rev_max_sesiones_usuario)
+_cap_u="${_cap_u//[[:space:]]/}"
+[[ -z "$_cap_u" ]] && _cap_u=0
+_max_ses_eff="$_max_ses_prueba"
+if [[ "$_cap_u" -gt 0 ]] && [[ "$_max_ses_eff" -gt "$_cap_u" ]]; then
+    _max_ses_eff="$_cap_u"
+fi
+[[ "$_max_ses_eff" -lt 1 ]] && _max_ses_eff=1
 
 error_exit() {
     echo ""
@@ -129,7 +141,12 @@ tput bold
 printf '%32s%s%-10s\n' "Usuario de prueba (revendedor)"
 tput sgr0
 echo ""
-echo -e "\033[1;36mPolítica del administrador:\033[0m duración \033[1;37m$_pr_min\033[0m min, \033[1;37m$_pr_ses\033[0m sesión(es) concurrente(s)."
+echo -e "\033[1;36mTope del administrador (no puede superarlo):\033[0m"
+echo -e "  • Hasta \033[1;37m$_max_min\033[0m minutos de duración"
+echo -e "  • Hasta \033[1;37m$_max_ses_eff\033[0m sesión(es) concurrente(s)"
+if [[ "$_cap_u" -gt 0 ]] && [[ "$_max_ses_eff" -lt "$_max_ses_prueba" ]]; then
+    echo -e "\033[1;33m  (Sesiones acotadas por MAX_SESIONES_POR_USUARIO=$_cap_u frente a PRUEBA_SESIONES=$_max_ses_prueba).\033[0m"
+fi
 echo ""
 
 if [[ "$(find "$TEST_DIR" -maxdepth 1 -name '*.sh' -print -quit 2>/dev/null)" ]]; then
@@ -154,8 +171,20 @@ _redlibre_read_tty pass
 pass=$(_redlibre_strip_input "$pass")
 [[ -z "$pass" ]] && error_exit "Contraseña vacía."
 
-limit="$_pr_ses"
-u_temp="$_pr_min"
+echo ""
+echo -ne "\033[1;32mDuración en minutos \033[1;37m(1–$_max_min)\033[1;32m:\033[1;37m "
+_redlibre_read_tty u_temp
+u_temp=$(_redlibre_strip_input "$u_temp")
+if ! [[ "$u_temp" =~ ^[0-9]+$ ]] || [[ "$u_temp" -lt 1 ]] || [[ "$u_temp" -gt "$_max_min" ]]; then
+    error_exit "Minutos inválidos: use un entero entre 1 y $_max_min."
+fi
+
+echo -ne "\033[1;32mSesiones concurrentes \033[1;37m(1–$_max_ses_eff)\033[1;32m:\033[1;37m "
+_redlibre_read_tty limit
+limit=$(_redlibre_strip_input "$limit")
+if ! [[ "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]] || [[ "$limit" -gt "$_max_ses_eff" ]]; then
+    error_exit "Sesiones inválidas: use un entero entre 1 y $_max_ses_eff."
+fi
 
 if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
     error_exit "No se pudo crear el usuario."
@@ -189,8 +218,8 @@ echo ""
 echo -e "\033[1;32mIP:\033[1;37m $IP"
 echo -e "\033[1;32mUsuario:\033[1;37m $nome"
 echo -e "\033[1;32mContraseña:\033[1;37m $pass"
-echo -e "\033[1;32mLímite sesiones:\033[1;37m $limit \033[0m(admin)"
-echo -e "\033[1;32mVálido:\033[1;37m $u_temp \033[0mmin (admin)"
+echo -e "\033[1;32mLímite sesiones:\033[1;37m $limit \033[0m(tope admin $_max_ses_eff)"
+echo -e "\033[1;32mVálido:\033[1;37m $u_temp \033[0mmin (tope admin $_max_min min)"
 echo ""
 echo -e "\033[1;37m$nome:$pass\033[0m"
 echo ""

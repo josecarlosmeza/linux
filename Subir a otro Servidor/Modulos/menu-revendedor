@@ -44,11 +44,13 @@ while true; do
         _ps="${_ps//[^0-9]/}"
         [[ -z "$_pm" || "$_pm" -lt 1 ]] && _pm=60
         [[ -z "$_ps" || "$_ps" -lt 1 ]] && _ps=1
-        echo -e "\033[1;36m Prueba (admin): \033[1;37m$_pm\033[0m min, \033[1;37m$_ps\033[0m sesión(es)/usuario"
         _mxu=$(grep -E '^MAX_SESIONES_POR_USUARIO=' "$_limf" | head -1 | cut -d= -f2)
         _mxt=$(grep -E '^MAX_SESIONES_TOTAL_REVENDEDOR=' "$_limf" | head -1 | cut -d= -f2)
         _mxu="${_mxu//[^0-9]/}"
         _mxt="${_mxt//[^0-9]/}"
+        _ps_eff="$_ps"
+        [[ "${_mxu:-0}" -gt 0 ]] && [[ "$_mxu" -lt "$_ps_eff" ]] && _ps_eff="$_mxu"
+        echo -e "\033[1;36m Usuario prueba — tope elegible: \033[1;37m$_pm\033[0m min, hasta \033[1;37m$_ps_eff\033[0m sesión(es)"
         [[ "${_mxu:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope sesiones/usuario: \033[1;37m$_mxu\033[0m"
         [[ "${_mxt:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope total sesiones (sus clientes): \033[1;37m$_mxt\033[0m"
         _ff=$(grep -E '^FECHA_FIN_REVENDEDOR=' "$_limf" | head -1 | cut -d= -f2-)
@@ -84,7 +86,7 @@ while true; do
     echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Cambiar contraseña"
     echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m INFORME DE USUARIOS"
     echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Backup / restaurar usuarios"
-    echo -e "\033[1;31m[\033[1;36m8\033[1;31m]\033[1;33m Crear usuario de prueba (tiempo y sesiones: admin)"
+    echo -e "\033[1;31m[\033[1;36m8\033[1;31m]\033[1;33m Crear usuario de prueba (elige minutos y sesiones dentro del tope)"
     echo -e "\033[1;31m[\033[1;36m9\033[1;31m]\033[1;33m Eliminar expirados (sus clientes)"
     echo -e "\033[1;31m[\033[1;36m10\033[1;31m]\033[1;33m Usuarios en línea (monitor)"
     echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Salir"
