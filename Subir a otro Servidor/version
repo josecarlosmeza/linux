@@ -1,2 +1,2 @@
-1.0.0.17
-criarusuario-rev-root: lecturas desde /dev/tty (evita stdin vacío con sudo+SSH), saneado CR/espacios, pausa antes de salir con error, fallback si falta set_password en common
+1.0.0.18
+criarusuario-rev-root: fallback redlibre_rev_valid_login_name y register_user si common del servidor está incompleto
