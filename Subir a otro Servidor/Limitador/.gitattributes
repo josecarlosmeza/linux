@@ -1,0 +1,4 @@
+# Forzar LF en scripts (evitar CRLF en Windows → errores en Linux)
+*.sh text eol=lf
+*.py text eol=lf
+limitador-* text eol=lf

@@ -414,7 +414,7 @@ case "$x" in
    echo -ne "\n\033[1;31mENTER \033[1;33mpara volver al \033[1;32mMENÚ\033[0m: "; read
    ;;
    16)
-   limit_ssh
+   gestor-limitador
    ;;
    17)
    clear

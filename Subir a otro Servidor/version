@@ -1,2 +1,2 @@
-1.0.0.24
-Menú opc. 5: «mudardata-rapido» — vencimiento por nombre de usuario, sin listado; resumen breve y misma lógica de fechas que mudardata.
+1.0.0.27
+gestor-limitador: opción 4 activa PAM + tiempo real a la vez (con avisos).
