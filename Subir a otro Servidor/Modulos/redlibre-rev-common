@@ -166,3 +166,50 @@ redlibre_rev_prueba_sesiones() {
     fi
     echo "$v"
 }
+
+# Dos dígitos: si el login del revendedor tiene dígitos, se eligen al azar entre ellos;
+# si no, dos dígitos 0–9 al azar. (Solo la parte numérica; véase redlibre_rev_ssh_cliente_prefix.)
+redlibre_rev_auto_ssh_digit_pair() {
+    local rev_user="$1"
+    local only_digits=""
+    local len i
+    only_digits="${rev_user//[^0-9]/}"
+    len=${#only_digits}
+    if [[ "$len" -ge 2 ]]; then
+        i=$((RANDOM % len))
+        printf '%s' "${only_digits:$i:1}"
+        i=$((RANDOM % len))
+        printf '%s' "${only_digits:$i:1}"
+    elif [[ "$len" -eq 1 ]]; then
+        printf '%s%d' "${only_digits:0:1}" $((RANDOM % 10))
+    else
+        printf '%d%d' $((RANDOM % 10)) $((RANDOM % 10))
+    fi
+}
+
+# Prefijo para cuentas SSH que crea el revendedor (clientes).
+# PREFIJO_SSH_CLIENTE en conf: minúsculas, números y guion bajo; debe empezar por letra.
+# Vacío o inválido: «u» + par de dígitos (redlibre_rev_auto_ssh_digit_pair) para cumplir useradd.
+redlibre_rev_ssh_cliente_prefix() {
+    local raw
+    raw=$(redlibre_rev_conf_get "PREFIJO_SSH_CLIENTE" "")
+    raw="${raw//$'\r'/}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    raw="${raw,,}"
+    raw="${raw//[^a-z0-9_]/}"
+    if [[ -n "$raw" ]] && [[ "$raw" =~ ^[a-z] ]]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    printf 'u%s' "$(redlibre_rev_auto_ssh_digit_pair "$REV")"
+}
+
+# Nombre de usuario Linux completo (prefijo + sufijo del revendedor).
+redlibre_rev_valid_prefixed_ssh_login() {
+    local u="$1"
+    [[ -n "$u" ]] || return 1
+    [[ ${#u} -ge 4 && ${#u} -le 32 ]] || return 1
+    [[ "$u" =~ ^[a-z][a-z0-9_]+$ ]] || return 1
+    return 0
+}

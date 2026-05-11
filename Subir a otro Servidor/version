@@ -1,2 +1,2 @@
-1.0.0.21
-Usuario prueba (rev): el revendedor elige minutos y sesiones; límites = PRUEBA_* y el más estricto con MAX_SESIONES_POR_USUARIO. Textos admin/menú aclaran «tope máx.».
+1.0.0.22
+Revendedores: PREFIJO_SSH_CLIENTE en conf (gestor al crear/editar); clientes SSH/prueba = prefijo+sufijo. Sin prefijo admin: «u»+2 dígitos aleatorios tomados del login Linux del revendedor (válido para useradd).

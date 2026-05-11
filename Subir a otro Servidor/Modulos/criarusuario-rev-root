@@ -19,6 +19,47 @@ if ! declare -F redlibre_rev_valid_login_name >/dev/null 2>&1; then
         return 0
     }
 fi
+if ! declare -F redlibre_rev_auto_ssh_digit_pair >/dev/null 2>&1; then
+    redlibre_rev_auto_ssh_digit_pair() {
+        local rev_user="$1" only_digits="" len i
+        only_digits="${rev_user//[^0-9]/}"
+        len=${#only_digits}
+        if [[ "$len" -ge 2 ]]; then
+            i=$((RANDOM % len))
+            printf '%s' "${only_digits:$i:1}"
+            i=$((RANDOM % len))
+            printf '%s' "${only_digits:$i:1}"
+        elif [[ "$len" -eq 1 ]]; then
+            printf '%s%d' "${only_digits:0:1}" $((RANDOM % 10))
+        else
+            printf '%d%d' $((RANDOM % 10)) $((RANDOM % 10))
+        fi
+    }
+fi
+if ! declare -F redlibre_rev_ssh_cliente_prefix >/dev/null 2>&1; then
+    redlibre_rev_ssh_cliente_prefix() {
+        local raw p
+        raw=$(redlibre_rev_conf_get "PREFIJO_SSH_CLIENTE" "")
+        raw="${raw//$'\r'/}"
+        raw="${raw#"${raw%%[![:space:]]*}"}"
+        raw="${raw%"${raw##*[![:space:]]}"}"
+        raw="${raw,,}"
+        raw="${raw//[^a-z0-9_]/}"
+        if [[ -n "$raw" ]] && [[ "$raw" =~ ^[a-z] ]]; then
+            printf '%s' "$raw"
+            return 0
+        fi
+        printf 'u%s' "$(redlibre_rev_auto_ssh_digit_pair "$REV")"
+    }
+fi
+if ! declare -F redlibre_rev_valid_prefixed_ssh_login >/dev/null 2>&1; then
+    redlibre_rev_valid_prefixed_ssh_login() {
+        local u="$1"
+        [[ -n "$u" && ${#u} -ge 4 && ${#u} -le 32 ]] || return 1
+        [[ "$u" =~ ^[a-z][a-z0-9_]+$ ]] || return 1
+        return 0
+    }
+fi
 if ! declare -F redlibre_rev_register_user >/dev/null 2>&1; then
     redlibre_rev_register_user() {
         local u="$1"
@@ -96,6 +137,18 @@ _cap="${_cap//[[:space:]]/}"
 _mxt=$(redlibre_rev_conf_get "MAX_SESIONES_TOTAL_REVENDEDOR" "0")
 _mxt="${_mxt//[^0-9]/}"
 [[ -z "$_mxt" ]] && _mxt=0
+_ssh_pfx="$(redlibre_rev_ssh_cliente_prefix)"
+_rp=$(redlibre_rev_conf_get "PREFIJO_SSH_CLIENTE" "")
+_rp="${_rp//$'\r'/}"
+_rp="${_rp#"${_rp%%[![:space:]]*}"}"
+_rp="${_rp%"${_rp##*[![:space:]]}"}"
+_rp="${_rp,,}"
+_rp="${_rp//[^a-z0-9_]/}"
+if [[ -n "$_rp" ]] && [[ "$_rp" =~ ^[a-z] ]]; then
+    _pfx_src="definido por el administrador"
+else
+    _pfx_src="automático (u + 2 dígitos de su usuario Linux)"
+fi
 
 clear
 tput setaf 7
@@ -122,17 +175,35 @@ if [[ "$_mxt" -gt 0 ]]; then
 else
     echo -e "\033[1;37m  • Sesiones totales entre clientes (admin): \033[1;32msin tope global\033[0m"
 fi
-echo -e "\033[1;37m  • Nombre de usuario: mínimo \033[1;33m4\033[1;37m caracteres, solo letras y números.\033[0m"
+echo -e "\033[1;37m  • Prefijo SSH aplicado (\033[1;33m$_pfx_src\033[1;37m): \033[1;33m$_ssh_pfx\033[0m"
+echo -e "\033[1;37m  • Indique solo el \033[1;33msufijo\033[1;37m (letras/números); el login será \033[1;33m${_ssh_pfx}SUFIJO\033[1;37m (4–32 caracteres en total).\033[0m"
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo ""
 
 # --- Entrada de Datos (mismo estilo que criarusuario admin) ---
-echo -ne "\033[1;32mNombre de usuario:\033[1;37m "
-_redlibre_read_tty username
-username=$(_redlibre_strip_input "$username")
-[[ -z "$username" ]] && { echo -e "\n\033[1;31mNombre vacío (¿la consola no recibió el teclado?).\033[0m\n"; _rev_pause_exit 1; }
-if ! redlibre_rev_valid_login_name "$username"; then
-    echo -e "\n\033[1;31mNombre inválido: mínimo 4 caracteres y solo letras y números (sin símbolos ni espacios).\033[0m\n"
+echo -ne "\033[1;32mSufijo del nombre de usuario (sin prefijo):\033[1;37m "
+_redlibre_read_tty sufijo
+sufijo=$(_redlibre_strip_input "$sufijo")
+[[ -z "$sufijo" ]] && { echo -e "\n\033[1;31mSufijo vacío (¿la consola no recibió el teclado?).\033[0m\n"; _rev_pause_exit 1; }
+if ! [[ "$sufijo" =~ ^[a-zA-Z0-9]+$ ]]; then
+    echo -e "\n\033[1;31mSufijo inválido: solo letras y números (sin símbolos ni espacios).\033[0m\n"
+    _rev_pause_exit 1
+fi
+_pl=${#_ssh_pfx}
+_min_s=$((4 - _pl))
+[[ "$_min_s" -lt 1 ]] && _min_s=1
+_max_s=$((32 - _pl))
+if [[ "$_max_s" -lt "$_min_s" ]]; then
+    echo -e "\n\033[1;31mEl prefijo del administrador es demasiado largo; no cabe un sufijo válido.\033[0m\n"
+    _rev_pause_exit 1
+fi
+if [[ ${#sufijo} -lt "$_min_s" ]] || [[ ${#sufijo} -gt "$_max_s" ]]; then
+    echo -e "\n\033[1;31mLongitud del sufijo inválida: entre $_min_s y $_max_s caracteres (el login completo debe tener 4–32).\033[0m\n"
+    _rev_pause_exit 1
+fi
+username="${_ssh_pfx}${sufijo}"
+if ! redlibre_rev_valid_prefixed_ssh_login "$username"; then
+    echo -e "\n\033[1;31mNombre de usuario completo inválido tras aplicar el prefijo.\033[0m\n"
     _rev_pause_exit 1
 fi
 if id "$username" &>/dev/null; then

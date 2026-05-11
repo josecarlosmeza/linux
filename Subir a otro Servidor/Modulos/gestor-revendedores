@@ -96,6 +96,22 @@ case "$_m" in
         if [[ "$rev_dias" -gt 0 ]]; then
             fe_fin=$(date -d "+$rev_dias days" '+%Y-%m-%d' 2>/dev/null || date --date="+$rev_dias days" '+%Y-%m-%d' 2>/dev/null)
         fi
+        echo -ne "\033[1;32mPrefijo para cuentas SSH de sus clientes \033[1;37m(letra inicial, luego letras/números/guion bajo; máx. 16; vacío = automático «u»+2 dígitos del nombre «$login»):\033[1;37m "
+        read -r ssh_pfx_in
+        ssh_pfx_in="${ssh_pfx_in//$'\r'/}"
+        ssh_pfx_in="${ssh_pfx_in#"${ssh_pfx_in%%[![:space:]]*}"}"
+        ssh_pfx_in="${ssh_pfx_in%"${ssh_pfx_in##*[![:space:]]}"}"
+        ssh_pfx_in="${ssh_pfx_in,,}"
+        ssh_pfx_in="${ssh_pfx_in//[^a-z0-9_]/}"
+        ssh_pfx_line=""
+        if [[ -n "$ssh_pfx_in" ]]; then
+            if ! [[ "$ssh_pfx_in" =~ ^[a-z][a-z0-9_]{0,15}$ ]]; then
+                echo -e "\033[1;31mPrefijo inválido (use minúsculas, empezar por letra, máx. 16).\033[0m"
+                sleep 2
+                exit 0
+            fi
+            ssh_pfx_line="PREFIJO_SSH_CLIENTE=$ssh_pfx_in"
+        fi
 
         if id "$login" &>/dev/null; then
             echo -e "\033[1;33mEl usuario «$login» ya existe en el sistema; se añadirá el rol revendedor.\033[0m"
@@ -123,6 +139,7 @@ case "$_m" in
             echo "PRUEBA_SESIONES=$pr_ses"
             echo "MAX_SESIONES_POR_USUARIO=$max_u"
             echo "MAX_SESIONES_TOTAL_REVENDEDOR=$max_t"
+            [[ -n "$ssh_pfx_line" ]] && echo "$ssh_pfx_line"
             [[ -n "$fe_fin" ]] && echo "FECHA_FIN_REVENDEDOR=$fe_fin"
             echo "# Creado $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)"
         } >"/etc/RedLibre/revendedores/$login/conf"
@@ -173,6 +190,7 @@ case "$_m" in
                 _mxu="0"
                 _mxt="0"
                 _ffe=""
+                _pfx=""
                 [[ -f "$d/conf" ]] && {
                     _lm=$(grep -E '^LIMITE_USUARIOS=' "$d/conf" | head -1 | cut -d= -f2)
                     _pm=$(grep -E '^PRUEBA_MINUTOS=' "$d/conf" | head -1 | cut -d= -f2)
@@ -181,9 +199,12 @@ case "$_m" in
                     _mxt=$(grep -E '^MAX_SESIONES_TOTAL_REVENDEDOR=' "$d/conf" | head -1 | cut -d= -f2)
                     _ffe=$(grep -E '^FECHA_FIN_REVENDEDOR=' "$d/conf" | head -1 | cut -d= -f2-)
                     _ffe="${_ffe//$'\r'/}"
+                    _pfx=$(grep -E '^PREFIJO_SSH_CLIENTE=' "$d/conf" | head -1 | cut -d= -f2-)
+                    _pfx="${_pfx//$'\r'/}"
                 }
                 [[ -z "${_ffe//[[:space:]]/}" ]] && _ffe_display="\033[1;32msin fecha\033[0m" || _ffe_display="\033[1;37m$_ffe\033[0m"
-                echo -e " \033[1;32m$b\033[0m — cuentas: \033[1;37m$_c\033[0m / \033[1;37m${_lm:-0}\033[0m — prueba tope máx.: \033[1;37m${_pm:-60}\033[0m min / \033[1;37m${_ps:-1}\033[0m ses. — tope/usr: \033[1;37m${_mxu:-0}\033[0m — tope total: \033[1;37m${_mxt:-0}\033[0m — fin cuenta: $_ffe_display"
+                [[ -n "${_pfx//[[:space:]]/}" ]] && _pfx_display="\033[1;37m$_pfx\033[0m" || _pfx_display="\033[1;32m(auto u+2 dígitos)\033[0m"
+                echo -e " \033[1;32m$b\033[0m — cuentas: \033[1;37m$_c\033[0m / \033[1;37m${_lm:-0}\033[0m — prefijo SSH clientes: $_pfx_display — prueba tope máx.: \033[1;37m${_pm:-60}\033[0m min / \033[1;37m${_ps:-1}\033[0m ses. — tope/usr: \033[1;37m${_mxu:-0}\033[0m — tope total: \033[1;37m${_mxt:-0}\033[0m — fin cuenta: $_ffe_display"
             done
             shopt -u nullglob
         fi
@@ -252,6 +273,9 @@ case "$_m" in
         _fe=$(grep -E '^FECHA_FIN_REVENDEDOR=' "$_cf" 2>/dev/null | head -1 | cut -d= -f2-)
         _fe="${_fe//$'\r'/}"
         _fe="${_fe//[[:space:]]/}"
+        _pfx=$(grep -E '^PREFIJO_SSH_CLIENTE=' "$_cf" 2>/dev/null | head -1 | cut -d= -f2-)
+        _pfx="${_pfx//$'\r'/}"
+        _pfx="${_pfx//[[:space:]]/}"
         [[ "${_lim//[^0-9]/}" = "" ]] && _lim=0
         [[ "${_pm//[^0-9]/}" = "" ]] || [[ "$_pm" -lt 1 ]] && _pm=60
         [[ "${_ps//[^0-9]/}" = "" ]] || [[ "$_ps" -lt 1 ]] && _ps=1
@@ -280,6 +304,34 @@ case "$_m" in
         [[ -n "${r//[^0-9]/}" ]] && max_t="$r" || max_t="$_mxt"
         [[ "${max_t//[^0-9]/}" = "" ]] && max_t=0
         echo ""
+        echo -e "\033[1;37mPrefijo SSH para clientes: letra inicial + letras/números/guion bajo (máx. 16).\033[0m"
+        echo -e "\033[1;32m  Valor actual: \033[1;37m${_pfx:-(automático: u + 2 dígitos del nombre del revendedor)}\033[0m"
+        echo -ne "\033[1;32m  Nuevo prefijo \033[1;33m(enter=mantener, «-»=quitar y usar automático)\033[1;32m:\033[1;37m "
+        read -r rpx
+        rpx="${rpx//$'\r'/}"
+        rpx="${rpx#"${rpx%%[![:space:]]*}"}"
+        rpx="${rpx%"${rpx##*[![:space:]]}"}"
+        new_pfx="$_pfx"
+        if [[ -n "$rpx" ]]; then
+            if [[ "$rpx" = "-" ]]; then
+                new_pfx=""
+            else
+                rpx="${rpx,,}"
+                rpx="${rpx//[^a-z0-9_]/}"
+                if [[ -z "$rpx" ]]; then
+                    echo -e "\033[1;31mPrefijo vacío tras normalizar.\033[0m"
+                    sleep 2
+                    exit 0
+                fi
+                if ! [[ "$rpx" =~ ^[a-z][a-z0-9_]{0,15}$ ]]; then
+                    echo -e "\033[1;31mPrefijo inválido.\033[0m"
+                    sleep 2
+                    exit 0
+                fi
+                new_pfx="$rpx"
+            fi
+        fi
+        echo ""
         echo -e "\033[1;37mVigencia cuenta revendedor (bloqueo del revendedor y clientes al llegar la fecha).\033[0m"
         echo -e "\033[1;32m  Fecha fin vigente: \033[1;37m${_fe:-sin límite}\033[0m"
         echo -ne "\033[1;32m  Nuevos días desde hoy (\033[1;33m0\033[1;32m=sin límite, enter=mantener):\033[1;37m "
@@ -297,13 +349,14 @@ case "$_m" in
             fi
             rm -f "/etc/RedLibre/revendedores/$login/.caducidad_aplicada" 2>/dev/null
         fi
-        _com=$(grep -v -E '^(LIMITE_USUARIOS|PRUEBA_MINUTOS|PRUEBA_SESIONES|MAX_SESIONES_POR_USUARIO|MAX_SESIONES_TOTAL_REVENDEDOR|FECHA_FIN_REVENDEDOR)=' "$_cf" 2>/dev/null)
+        _com=$(grep -v -E '^(LIMITE_USUARIOS|PRUEBA_MINUTOS|PRUEBA_SESIONES|MAX_SESIONES_POR_USUARIO|MAX_SESIONES_TOTAL_REVENDEDOR|FECHA_FIN_REVENDEDOR|PREFIJO_SSH_CLIENTE)=' "$_cf" 2>/dev/null)
         {
             echo "LIMITE_USUARIOS=$lim"
             echo "PRUEBA_MINUTOS=$pr_min"
             echo "PRUEBA_SESIONES=$pr_ses"
             echo "MAX_SESIONES_POR_USUARIO=$max_u"
             echo "MAX_SESIONES_TOTAL_REVENDEDOR=$max_t"
+            [[ -n "$new_pfx" ]] && echo "PREFIJO_SSH_CLIENTE=$new_pfx"
             [[ -n "$new_fe" ]] && echo "FECHA_FIN_REVENDEDOR=$new_fe"
             [[ -n "$_com" ]] && printf '%s\n' "$_com"
         } >"$_cf"
