@@ -1,2 +1,2 @@
-1.0.0.22
-Revendedores: PREFIJO_SSH_CLIENTE en conf (gestor al crear/editar); clientes SSH/prueba = prefijo+sufijo. Sin prefijo admin: «u»+2 dígitos aleatorios tomados del login Linux del revendedor (válido para useradd).
+1.0.0.24
+Menú opc. 5: «mudardata-rapido» — vencimiento por nombre de usuario, sin listado; resumen breve y misma lógica de fechas que mudardata.
