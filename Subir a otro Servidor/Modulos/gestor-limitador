@@ -63,14 +63,6 @@ _redlibre_pam_remove() {
     sed -i '/pam_exec\.so.*check_ssh_limits\.sh/d' /etc/pam.d/sshd 2>/dev/null || true
 }
 
-_redlibre_sshd_restart() {
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
-    else
-        service sshd restart 2>/dev/null || service ssh restart 2>/dev/null || true
-    fi
-}
-
 _redlibre_rt_stop() {
     screen -S limiter -X quit 2>/dev/null
     screen -wipe 1>/dev/null 2>&1
@@ -165,9 +157,9 @@ while true; do
             clear
             echo -e "\033[1;32mActivando limitador en tiempo real…\033[0m"
             _redlibre_pam_remove
-            _redlibre_sshd_restart
             _redlibre_rt_start
-            echo -e "\033[1;32mListo. PAM del limitador desmontado (si estaba), sshd reiniciado, screen limiter iniciado.\033[0m"
+            echo -e "\033[1;32mListo. PAM del limitador desmontado en /etc/pam.d/sshd (si estaba); screen limiter iniciado.\033[0m"
+            echo -e "\033[1;37mNo se ha reiniciado ni recargado sshd (no corta sesiones SSH actuales).\033[0m"
             echo -e "\033[1;37mEl servicio db-guardian no se ha modificado.\033[0m"
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r
@@ -186,8 +178,8 @@ while true; do
             echo -e "\033[1;31mDeteniendo limitadores de sesión (screen y PAM)…\033[0m"
             _redlibre_rt_stop
             _redlibre_pam_remove
-            _redlibre_sshd_restart
-            echo -e "\033[1;32mHecho: screen limiter parado, líneas PAM del limitador eliminadas, sshd reiniciado.\033[0m"
+            echo -e "\033[1;32mHecho: screen limiter parado y líneas PAM del limitador eliminadas de /etc/pam.d/sshd.\033[0m"
+            echo -e "\033[1;37mNo se ha reiniciado ni recargado sshd.\033[0m"
             echo -e "\033[1;37mdb-guardian no se ha detenido ni deshabilitado.\033[0m"
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r

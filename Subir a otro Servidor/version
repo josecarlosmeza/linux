@@ -1,2 +1,2 @@
-1.0.0.27
-gestor-limitador: opción 4 activa PAM + tiempo real a la vez (con avisos).
+1.0.0.28
+gestor-limitador: opciones 1 y 3 ya no reinician sshd al desactivar PAM/limitadores.
