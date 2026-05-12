@@ -1,2 +1,2 @@
-1.0.0.28
-gestor-limitador: opciones 1 y 3 ya no reinician sshd al desactivar PAM/limitadores.
+1.0.0.29
+limitador-completo: limpiador fantasma no mata el sshd listener (evita caída del servicio cada cron).

@@ -163,11 +163,16 @@ echo "✅ Script limitador instalado (lee de $DB_LIMITER, protege root)."
 echo "--- 4b. Limpiador de sesiones fantasma ---"
 tee "$GHOST_CLEANUP_PATH" > /dev/null <<'GHOST_EOF'
 #!/bin/bash
-# Mata sshd: sin conexión TCP ESTABLISHED (sesiones fantasma)
+# Mata sesiones sshd: huérfanas (sin TCP ESTABLISHED).
+# No debe matar el daemon en escucha: en OpenSSH reciente el master aparece como "sshd: ... [listener]"
+# y no tiene líneas ESTABLISHED en ss, solo LISTEN.
 command -v ss &>/dev/null || exit 0
 killed=0
 for pid in $(pgrep -f "sshd:" 2>/dev/null); do
-  if ! ss -tnp state established 2>/dev/null | grep -q "pid=$pid"; then
+  if ss -tlnp 2>/dev/null | grep -qE "pid=${pid}[,)]"; then
+    continue
+  fi
+  if ! ss -tnp state established 2>/dev/null | grep -qE "pid=${pid}[,)]"; then
     kill -TERM "$pid" 2>/dev/null && { logger -t ssh_ghost_cleanup "Killed ghost sshd PID $pid"; killed=$((killed+1)); }
   fi
 done
