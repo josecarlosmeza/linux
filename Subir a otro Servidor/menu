@@ -167,6 +167,7 @@ else
 system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
 fi
 _ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
+[[ -x /bin/uexpired ]] && /bin/uexpired >/dev/null 2>&1
 _expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
 case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
 _onop="0"
@@ -296,6 +297,7 @@ else
 system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
 fi
 _ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
+[[ -x /bin/uexpired ]] && /bin/uexpired >/dev/null 2>&1
 _expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
 case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
 _onop="0"

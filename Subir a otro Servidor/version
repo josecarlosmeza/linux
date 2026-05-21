@@ -1,2 +1,2 @@
-1.0.0.29
-limitador-completo: limpiador fantasma no mata el sshd listener (evita caída del servicio cada cron).
+1.0.0.30
+expcleaner: comparación epoch sin grep/bc (arreglo «stray \\ before -» y bajas correctas). uexpired: síncrono, LANG chage, /etc/RedLibre/Exp. Menú: llama uexpired al pintar. bot: comparación sin grep.

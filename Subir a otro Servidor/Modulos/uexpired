@@ -1,15 +1,16 @@
 #!/bin/bash
-fun_exp () {
-(
+# Cuenta usuarios (UID >= 1000) con fecha de expiración de cuenta ya pasada y escribe /etc/RedLibre/Exp
+# Debe ejecutarse de forma síncrona (cron / list / tras expcleaner) para que el menú muestre el número correcto.
+[[ -d /etc/RedLibre ]] || mkdir -p /etc/RedLibre
 userexp=0
-for _user in $(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody); do
-   exp_line=$(chage -l "$_user" 2>/dev/null | grep "Account expires" | awk -F ': ' '{print $2}')
-   [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
-   exp_sec=$(date +%s --date="$exp_line" 2>/dev/null)
-   [[ -z "$exp_sec" ]] && continue
-   [[ $(date +%s) -gt "$exp_sec" ]] && userexp=$(($userexp + 1))
-done
-echo "$userexp" > /etc/RedLibre/Exp
-) &
-}
-fun_exp > /dev/null 2>&1
+_now=$(date +%s)
+while IFS= read -r _user; do
+    [[ -z "$_user" || "$_user" == "root" ]] && continue
+    exp_line=$(LANG=en_US.UTF-8 chage -l "$_user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
+    exp_sec=$(date +%s --date="$exp_line" 2>/dev/null || date +%s -d "$exp_line" 2>/dev/null)
+    [[ -z "$exp_sec" ]] && continue
+    [[ "$_now" -gt "$exp_sec" ]] && userexp=$((userexp + 1))
+done < <(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody)
+
+printf '%s\n' "$userexp" >/etc/RedLibre/Exp

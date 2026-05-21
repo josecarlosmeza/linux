@@ -984,12 +984,11 @@ fun_exp_user() {
         }
         datenow=$(date +%s)
         for user in $(cat /etc/passwd | awk -F : '$3 >= 1000 {print $1}' | grep -v nobody); do
-            expdate=$(chage -l $user | awk -F: '/Account expires/{print $2}')
+            expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             echo $expdate | grep -q never && continue
             datanormal=$(date -d"$expdate" '+%d/%m/%Y')
             expsec=$(date +%s --date="$expdate")
-            diff=$(echo $datenow - $expsec | bc -l)
-            echo $diff | grep -q ^\- && continue
+            [[ "$datenow" -lt "$expsec" ]] && continue
             pkill -u $user
             userdel --force $user
             grep -v ^$user[[:space:]] /root/usuarios.db >/tmp/ph
@@ -1019,12 +1018,11 @@ fun_exp_user() {
         datenow=$(date +%s)
         dir_user="/etc/bot/revenda/${callback_query_from_username}/usuarios"
         for user in $(ls $dir_user); do
-            expdate=$(chage -l $user | awk -F: '/Account expires/{print $2}')
+            expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             echo $expdate | grep -q never && continue
             datanormal=$(date -d"$expdate" '+%d/%m/%Y')
             expsec=$(date +%s --date="$expdate")
-            diff=$(echo $datenow - $expsec | bc -l)
-            echo $diff | grep -q ^\- && continue
+            [[ "$datenow" -lt "$expsec" ]] && continue
             pkill -f $user
             userdel --force $user
             grep -v ^$user[[:space:]] /root/usuarios.db >/tmp/ph
