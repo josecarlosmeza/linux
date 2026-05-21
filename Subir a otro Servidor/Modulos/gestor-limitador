@@ -71,7 +71,14 @@ _redlibre_rt_stop() {
     fi
 }
 
+_redlibre_screen_prepare() {
+    # screen exige /run/screen con permisos amplios (en algunas distros 777).
+    mkdir -p /run/screen 2>/dev/null || true
+    chmod 777 /run/screen 2>/dev/null || true
+}
+
 _redlibre_rt_start() {
+    _redlibre_screen_prepare
     screen -dmS limiter limiter 2>/dev/null
     sleep 1
     if [[ ! -f /etc/autostart ]]; then
@@ -82,7 +89,13 @@ _redlibre_rt_start() {
         } >/etc/autostart
         chmod +x /etc/autostart 2>/dev/null || true
     fi
-    if [[ $(grep -wc "limiter" /etc/autostart 2>/dev/null || echo 0) -eq 0 ]]; then
+    # grep -c con 0 coincidencias imprime "0" pero código de salida 1; no usar "|| echo 0" (duplica y rompe [[ ]]).
+    local _lc
+    _lc=0
+    [[ -f /etc/autostart ]] && _lc=$(grep -Fsc limiter /etc/autostart 2>/dev/null)
+    _lc="${_lc//[^0-9]/}"
+    [[ -z "$_lc" ]] && _lc=0
+    if [[ "$_lc" -eq 0 ]]; then
         echo "ps x | grep 'limiter' | grep -v 'grep' && echo 'ON' || screen -dmS limiter limiter" >>/etc/autostart
     else
         sed -i '/limiter/d' /etc/autostart

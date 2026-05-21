@@ -1,2 +1,2 @@
-1.0.0.30
-expcleaner: comparación epoch sin grep/bc (arreglo «stray \\ before -» y bajas correctas). uexpired: síncrono, LANG chage, /etc/RedLibre/Exp. Menú: llama uexpired al pintar. bot: comparación sin grep.
+1.0.0.31
+gestor-limitador: preparar /run/screen (chmod 777) antes de screen; conteo limiter en /etc/autostart sin «|| echo 0» (evita «[[: 0\n0» y error de sintaxis).
