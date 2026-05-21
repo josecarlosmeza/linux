@@ -1,2 +1,2 @@
-1.0.0.31
-gestor-limitador: preparar /run/screen (chmod 777) antes de screen; conteo limiter en /etc/autostart sin «|| echo 0» (evita «[[: 0\n0» y error de sintaxis).
+1.0.0.33
+Alma/RHEL limitador-completo (Limitador/ y Subir/): PAM cuenta sesiones con ps como infousers; denegación con -gt. Limitador/: GRACE_BUFFER por defecto 0 (antes 1 permitía límite+1); gracias ss con pid=…[,)]; PIDs via ps comm sshd.

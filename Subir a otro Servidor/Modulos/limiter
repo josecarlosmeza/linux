@@ -5,12 +5,24 @@
 
 # --- CONFIGURACIÓN ---
 database="/root/usuarios.db"
-AUTH_LOG_FILE="/var/log/secure"
+# Debian/Ubuntu: auth.log; RHEL/Alma: secure (igual que sshmonitor-sshd).
+if [[ -f /var/log/secure ]]; then
+    AUTH_LOG_FILE="/var/log/secure"
+elif [[ -f /var/log/auth.log ]]; then
+    AUTH_LOG_FILE="/var/log/auth.log"
+else
+    AUTH_LOG_FILE="/var/log/messages"
+fi
 LOG_KILL_FILE="/var/log/session_kill.log"
 
 LOG_TAIL_LINES=5000 # Solo busca en las últimas 5000 líneas del log.
 SLEEP_TIME=10       # Esperar 10 segundos entre ciclos.
 # --- FIN CONFIGURACIÓN ---
+
+# PIDs en auth: dropbear[123], sshd[123], sshd-session[123] (OpenSSH reciente).
+_redlibre_limiter_extract_pids() {
+    grep -oE 'dropbear\[[0-9]+\]|sshd-session\[[0-9]+\]|sshd\[[0-9]+\]' 2>/dev/null | sed 's/.*\[\([0-9]*\)\]/\1/' | sort -u
+}
 
 get_active_session_count() {
     # CORRECCIÓN: Usar la variable de posición directamente sin barras invertidas o asignación problemática
@@ -18,16 +30,15 @@ get_active_session_count() {
     local active_count=0
     
     # 1. OPTIMIZACIÓN: Solo buscar en las últimas LOG_TAIL_LINES del log
-    SUCCESS_LINES=$(tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" | grep -E 'Accepted password|Password auth succeeded|session opened' | grep -w "$target_user")
+    if [[ ! -r "$AUTH_LOG_FILE" ]]; then
+        echo "0"
+        return
+    fi
+    SUCCESS_LINES=$(tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null | grep -E 'Accepted password|Password auth succeeded|session opened' | grep -w "$target_user")
 
     if [[ -n "$SUCCESS_LINES" ]]; then
-        local pids=""
-        
-        # 2. Extracción de PIDs (Dropbear y SSHD)
-        pids+=$(echo "$SUCCESS_LINES" | grep "dropbear" | sed -E 's/.*dropbear\[([0-9]+)\].*/\1/')
-        pids+=" "
-        pids+=$(echo "$SUCCESS_LINES" | grep "sshd" | sed -E 's/.*sshd\[([0-9]+)\].*/\1/g')
-        REGISTERED_PIDS=$(echo "$pids" | tr ' ' '\n' | grep -v '^$' | sort -u)
+        # 2. Extracción de PIDs (dropbear / sshd / sshd-session)
+        REGISTERED_PIDS=$(echo "$SUCCESS_LINES" | _redlibre_limiter_extract_pids)
 
         # 3. Contar cuántos PIDs registrados siguen activos
         for pid in $REGISTERED_PIDS; do
@@ -58,12 +69,12 @@ while true; do
             
             # Obtener TODOS los PIDs activos (ordenados de más nuevo a más viejo) para matar la sesión más reciente
             ALL_ACTIVE_PIDS=$(
-                tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" |
-                grep -E 'Accepted password|Password auth succeeded|session opened' | 
-                grep -w "$user" | 
-                sed -E -e '/dropbear/! s/.*sshd\[([0-9]+)\].*/\1/g' -e '/sshd/! s/.*dropbear\[([0-9]+)\].*/\1/g' |
-                tr -s ' ' '\n' | grep -v '^$' | sort -nr | # Ordena el PID más reciente (mayor número) primero
-                while read pid; do
+                tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null |
+                grep -E 'Accepted password|Password auth succeeded|session opened' |
+                grep -w "$user" |
+                _redlibre_limiter_extract_pids |
+                sort -nr |
+                while read -r pid; do
                     ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
                 done
             )
@@ -99,11 +110,11 @@ while true; do
         if [[ "$_tot" -gt "$_max_tot" ]]; then
             ALL_ACTIVE_PIDS=$(
                 for _un in "${_rev_users[@]}"; do
-                    tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" |
+                    tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null |
                     grep -E 'Accepted password|Password auth succeeded|session opened' |
                     grep -w "$_un" |
-                    sed -E -e '/dropbear/! s/.*sshd\[([0-9]+)\].*/\1/g' -e '/sshd/! s/.*dropbear\[([0-9]+)\].*/\1/g'
-                done | tr '\n' ' ' | tr -s ' ' '\n' | grep -v '^$' | sort -nr | while read -r pid; do
+                    _redlibre_limiter_extract_pids
+                done | sort -nr | uniq | while read -r pid; do
                     ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
                 done
             )

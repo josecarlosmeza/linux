@@ -131,36 +131,30 @@ if [ -z "\$MAX_ALLOWED" ]; then
     MAX_ALLOWED=\$(grep "^\* " "\$DB_SOURCE" 2>/dev/null | awk '{print \$2}')
 fi
 MAX_ALLOWED=\${MAX_ALLOWED:-3}
-# Buffer de tolerancia: sesiones extra permitidas (mitiga fantasmas/delays). 0=estricto.
-GRACE_BUFFER=${GRACE_BUFFER:-1}
+# Buffer: sesiones extra permitidas sobre el límite (0=estricto, igual que el panel). Antes el default 1 permitía «límite+1» conexiones.
+GRACE_BUFFER=\${GRACE_BUFFER:-0}
 # Gracia por tiempo: si sesión más antigua < N seg, permitir conexión extra (fantasma reciente).
-GRACE_MAX_AGE_SEC=${GRACE_MAX_AGE_SEC:-300}
+GRACE_MAX_AGE_SEC=\${GRACE_MAX_AGE_SEC:-300}
 
-# 4. SESIONES ACTUALES: solo con TCP ESTABLISHED, excluir la que está entrando (PPID)
-# PAM ejecuta este script como hijo del sshd de la nueva conexión; no contamos ese.
-ME=\$PPID
-if command -v ss &>/dev/null; then
-  CURRENT_SESSIONS=0
-  for pid in \$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null); do
-    [ "\$pid" = "\$ME" ] && continue
-    ss -tnp state established 2>/dev/null | grep -q "pid=\$pid" && CURRENT_SESSIONS=\$((CURRENT_SESSIONS + 1))
-  done
-else
-  n=\$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null | wc -l)
-  [ "\$n" -gt 0 ] && pgrep -u "\$USER" -f "sshd:" 2>/dev/null | grep -q "^\$ME\$" && n=\$((n - 1))
-  CURRENT_SESSIONS=\${n:-0}
-fi
+# 4. SESIONES: mismo criterio que infousers (ps). pgrep/sshd: + ss subcuenta en AlmaLinux 9+ frente al menú.
+CURRENT_SESSIONS=\$(ps -u "\$USER" 2>/dev/null | grep -c '[s]shd' || true)
 CURRENT_SESSIONS=\${CURRENT_SESSIONS:-0}
 
-# 5. BLOQUEO: denegar solo si supera límite + buffer (buffer absorbe falsos positivos)
+# PIDs ssh del usuario (comm sshd / sshd-session) para gracias basadas en ss
+ME=\$PPID
+_ssh_pids_for_user() {
+  ps -u "\$USER" -o pid=,comm= 2>/dev/null | awk '\$2 ~ /sshd/ {print \$1}'
+}
+
+# 5. BLOQUEO: denegar si supera límite + buffer (-gt: la sesión nueva ya suele estar en ps al ejecutarse PAM)
 DENY_AT=\$((MAX_ALLOWED + GRACE_BUFFER))
-if [ "\$CURRENT_SESSIONS" -ge "\$DENY_AT" ]; then
+if [ "\$CURRENT_SESSIONS" -gt "\$DENY_AT" ]; then
     # Gracia tiempo: si la sesión más antigua tiene < GRACE_MAX_AGE_SEC, permitir (posible fantasma)
     if [ "\$GRACE_MAX_AGE_SEC" -gt 0 ] && [ "\$CURRENT_SESSIONS" -ge 1 ]; then
       max_age=0
-      for pid in \$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null); do
+      for pid in \$(_ssh_pids_for_user); do
         [ "\$pid" = "\$ME" ] && continue
-        ss -tnp state established 2>/dev/null | grep -q "pid=\$pid" || continue
+        ss -tnp state established 2>/dev/null | grep -qE "pid=\${pid}[,)]" || continue
         age=\$(ps -p "\$pid" -o etimes= 2>/dev/null)
         [ -n "\$age" ] && [ "\$age" -gt "\$max_age" ] && max_age=\$age
       done
@@ -173,9 +167,9 @@ if [ "\$CURRENT_SESSIONS" -ge "\$DENY_AT" ]; then
     # Gracia proxy: si todas las sesiones son desde 127.0.0.1 (proxy interno), permitir
     if command -v ss &>/dev/null; then
       all_proxy=1
-      for pid in \$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null); do
+      for pid in \$(_ssh_pids_for_user); do
         [ "\$pid" = "\$ME" ] && continue
-        line=\$(ss -tnp state established 2>/dev/null | grep "pid=\$pid" | head -1)
+        line=\$(ss -tnp state established 2>/dev/null | grep -E "pid=\${pid}[,)]" | head -1)
         [ -z "\$line" ] && continue
         echo "\$line" | grep -q "127\.0\.0\.1" || { all_proxy=0; break; }
       done

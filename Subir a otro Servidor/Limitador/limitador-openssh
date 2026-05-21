@@ -42,12 +42,11 @@ if [ -z "$MAX_ALLOWED" ]; then
 fi
 MAX_ALLOWED=${MAX_ALLOWED:-3}
 
-# 3. CONTAR SESIONES ACTUALES (Excluyendo procesos de sistema)
-# 'pgrep -u' asegura que solo contamos procesos de ese usuario específico.
-CURRENT_SESSIONS=$(pgrep -u "$USER" -f "sshd:" | wc -l)
+# 3. CONTAR SESIONES SSH del usuario (alineado con infousers: ps; incluye sshd-session en distros nuevas)
+CURRENT_SESSIONS=$(ps -u "$USER" 2>/dev/null | grep -c '[s]shd' || true)
+CURRENT_SESSIONS=${CURRENT_SESSIONS:-0}
 
-# 4. APLICAR LÓGICA DE BLOQUEO
-# Usamos -gt (mayor que) para dar margen a la sesión que está entrando.
+# 4. APLICAR LÓGICA DE BLOQUEO (-gt: la sesión que entra suele ya figurar en ps al ejecutarse PAM)
 if [ "$CURRENT_SESSIONS" -gt "$MAX_ALLOWED" ]; then
     logger -t ssh_limiter "DENIED: $USER excedió el límite de $MAX_ALLOWED (Activas: $CURRENT_SESSIONS)"
     exit 1
@@ -65,14 +64,38 @@ echo "--- 3. Configurando PAM ($PAM_SSHD_FILE) ---"
 # Limpiar instalaciones previas
 sudo sed -i "/$LIMITER_PATH/d" "$PAM_SSHD_FILE"
 
-# Añadir la línea de ejecución de forma segura
-# Se coloca antes de pam_unix para que verifique el límite antes de dar el acceso final
-sudo sed -i "/^account\s*required\s*pam_unix.so/i account\trequired\t\tpam_exec.so $LIMITER_PATH" "$PAM_SSHD_FILE"
-echo "✅ Línea añadida a PAM."
+# Debian/Ubuntu: no hay pam_unix.so en sshd (usa @include common-account). Alma/RHEL: password-auth o pam_unix.
+PAM_LINE="account    required    pam_exec.so $LIMITER_PATH"
+if grep -qE '^@include[[:space:]]+common-account' "$PAM_SSHD_FILE" 2>/dev/null; then
+    sudo sed -i "/^@include[[:space:]]\+common-account/i ${PAM_LINE}" "$PAM_SSHD_FILE"
+    echo "✅ pam_exec insertado antes de @include common-account (Debian/Ubuntu)."
+elif grep -qE '^account[[:space:]]+include[[:space:]]+password-auth' "$PAM_SSHD_FILE" 2>/dev/null; then
+    sudo sed -i "/^account[[:space:]]\+include[[:space:]]\+password-auth/i ${PAM_LINE}" "$PAM_SSHD_FILE"
+    echo "✅ pam_exec insertado antes de account include password-auth (RHEL/Alma)."
+elif grep -qE '^account[[:space:]]+required[[:space:]]+pam_unix\.so' "$PAM_SSHD_FILE" 2>/dev/null; then
+    sudo sed -i "/^account[[:space:]]\+required[[:space:]]\+pam_unix\.so/i ${PAM_LINE}" "$PAM_SSHD_FILE"
+    echo "✅ pam_exec insertado antes de pam_unix.so."
+else
+    echo "⚠️  No se encontró ancla típica en $PAM_SSHD_FILE. Añada a mano esta línea en la pila account, antes de permitir la cuenta:"
+    echo "    $PAM_LINE"
+fi
+
+if ! grep -qF "pam_exec.so $LIMITER_PATH" "$PAM_SSHD_FILE" 2>/dev/null; then
+    echo "⚠️  Revise /etc/pam.d/sshd: sin pam_exec el limitador PAM no se ejecuta."
+fi
+if grep -qE '^\s*UsePAM\s+no' /etc/ssh/sshd_config 2>/dev/null; then
+    echo "⚠️  sshd tiene UsePAM no — el limitador PAM no se ejecutará hasta UsePAM yes y reinicio de ssh."
+fi
 
 # --- 4. REINICIAR SERVICIOS ---
 echo "--- 4. Reiniciando OpenSSH ---"
-sudo systemctl restart sshd
-echo "✅ Instalación completada con éxito."
+if sudo systemctl restart sshd 2>/dev/null; then
+    echo "✅ Servicio sshd reiniciado."
+elif sudo systemctl restart ssh 2>/dev/null; then
+    echo "✅ Servicio ssh reiniciado (Debian/Ubuntu)."
+else
+    echo "⚠️  No se pudo reiniciar sshd/ssh con systemctl; ejecute: systemctl restart ssh o sshd"
+fi
+echo "✅ Instalación del script y PAM finalizada."
 echo ""
 echo "⚠️  NOTA: El usuario 'root' ahora tiene acceso total garantizado."

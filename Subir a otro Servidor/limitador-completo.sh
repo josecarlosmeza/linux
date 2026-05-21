@@ -131,25 +131,13 @@ if [ -z "\$MAX_ALLOWED" ]; then
 fi
 MAX_ALLOWED=\${MAX_ALLOWED:-3}
 
-# 4. SESIONES ACTUALES: solo con TCP ESTABLISHED, excluir la que está entrando (PPID)
-# PAM ejecuta este script como hijo del sshd de la nueva conexión; no contamos ese.
-ME=\$PPID
-if command -v ss &>/dev/null; then
-  CURRENT_SESSIONS=0
-  for pid in \$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null); do
-    [ "\$pid" = "\$ME" ] && continue
-    ss -tnp state established 2>/dev/null | grep -q "pid=\$pid" && CURRENT_SESSIONS=\$((CURRENT_SESSIONS + 1))
-  done
-else
-  n=\$(pgrep -u "\$USER" -f "sshd:" 2>/dev/null | wc -l)
-  [ "\$n" -gt 0 ] && pgrep -u "\$USER" -f "sshd:" 2>/dev/null | grep -q "^\$ME\$" && n=\$((n - 1))
-  CURRENT_SESSIONS=\${n:-0}
-fi
+# 4. SESIONES: mismo criterio que infousers (ps). pgrep «sshd:» + ss en Alma 9/OpenSSH reciente suele descontar frente al panel.
+CURRENT_SESSIONS=\$(ps -u "\$USER" 2>/dev/null | grep -c '[s]shd' || true)
 CURRENT_SESSIONS=\${CURRENT_SESSIONS:-0}
 
-# 5. BLOQUEO: denegar si ya tiene >= límite (la que entra sería la que excede)
-if [ "\$CURRENT_SESSIONS" -ge "\$MAX_ALLOWED" ]; then
-    logger -t ssh_limiter "DENIED: \$USER límite=\$MAX_ALLOWED activas=\$CURRENT_SESSIONS"
+# 5. BLOQUEO: denegar si supera el límite (-gt alinea con la sesión que ya aparece en ps durante PAM)
+if [ "\$CURRENT_SESSIONS" -gt "\$MAX_ALLOWED" ]; then
+    logger -t ssh_limiter "DENIED: \$USER límite=\$MAX_ALLOWED activas_ps=\$CURRENT_SESSIONS"
     exit 1
 fi
 
