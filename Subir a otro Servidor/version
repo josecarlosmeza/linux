@@ -1,2 +1,2 @@
-1.0.0.33
-Alma/RHEL limitador-completo (Limitador/ y Subir/): PAM cuenta sesiones con ps como infousers; denegación con -gt. Limitador/: GRACE_BUFFER por defecto 0 (antes 1 permitía límite+1); gracias ss con pid=…[,)]; PIDs via ps comm sshd.
+1.0.0.34
+gestor-limitador: estado tiempo real sin falsos positivos (excluye droplimiter); parada con pkill del watcher /bin/limiter si screen no lo mata.

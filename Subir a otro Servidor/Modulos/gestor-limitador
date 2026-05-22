@@ -11,7 +11,10 @@
 URL_BASE="https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Limitador"
 
 _redlibre_rt_running() {
-    ps x 2>/dev/null | grep '[l]imiter' >/dev/null 2>&1
+    # «limiter» en ps también coincide con /bin/droplimiter (subcadena «limiter»); excluir falsos positivos.
+    pgrep -x limiter &>/dev/null && return 0
+    ps x 2>/dev/null | grep '[l]imiter' | grep -Fv 'droplimiter' | grep -q . && return 0
+    return 1
 }
 
 _redlibre_rt_status() {
@@ -66,6 +69,10 @@ _redlibre_pam_remove() {
 _redlibre_rt_stop() {
     screen -S limiter -X quit 2>/dev/null
     screen -wipe 1>/dev/null 2>&1
+    # Si el proceso sigue sin screen (p. ej. relanzado entre cron y autostart), matar el watcher explícito.
+    pkill -x limiter 2>/dev/null || true
+    pkill -f '[/]bin/limiter' 2>/dev/null || true
+    pkill -f '[/]usr/bin/limiter' 2>/dev/null || true
     if [[ -f /etc/autostart ]] && grep -q limiter /etc/autostart 2>/dev/null; then
         sed -i '/limiter/d' /etc/autostart
     fi
