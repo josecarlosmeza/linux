@@ -1,2 +1,2 @@
-1.0.0.34
-gestor-limitador: estado tiempo real sin falsos positivos (excluye droplimiter); parada con pkill del watcher /bin/limiter si screen no lo mata.
+1.0.0.35
+sshmonitor-sshd / sshmonitor-dropbear: no listar filas basura de usuarios.db (comentarios, *, solo números sin cuenta); filtro de log sin grep -w corto; total de sesiones tras tope por usuario; PIDs sshd-session.
