@@ -92,6 +92,7 @@ class UdppyConnection:
         orig_ipv6: bool,
         target_ip: str,
         target_port: int,
+        target_ipv6: bool,
         udp_mtu: int,
         udppy_mtu: int,
         linux_tune_sockets: bool,
@@ -103,6 +104,7 @@ class UdppyConnection:
         self.orig_ipv6 = orig_ipv6
         self.target_ip = target_ip
         self.target_port = target_port
+        self.target_ipv6 = target_ipv6
         self.udp_mtu = udp_mtu
         self.udppy_mtu = udppy_mtu
         self._linux_tune_sockets = linux_tune_sockets
@@ -136,10 +138,11 @@ class UdppyConnection:
 
     async def setup_udp(self) -> None:
         loop = asyncio.get_running_loop()
-        # create_datagram_endpoint con remote_addr enlaza y conecta (compatible con asyncio)
+        # Socket UDP sin connect() (como badvpn/udp-py): evita EACCES con SELinux en AlmaLinux.
+        local_addr = ("::", 0) if self.target_ipv6 else ("0.0.0.0", 0)
         t, p = await loop.create_datagram_endpoint(
             lambda: _UdppyUdpProtocol(self),
-            remote_addr=(self.target_ip, self.target_port),
+            local_addr=local_addr,
         )
         self._transport = t
         self._protocol = p
@@ -153,11 +156,11 @@ class UdppyConnection:
         if self._closed or not self._transport:
             return
         self.touch()
-        # Python 3.12+: DatagramTransport solo expone sendto(); antes existía send().
+        dest = (self.target_ip, self.target_port)
         trans = self._transport
         sendto = getattr(trans, "sendto", None)
         if sendto is not None:
-            sendto(data)
+            sendto(data, dest)
         else:
             trans.send(data)
 
@@ -332,7 +335,7 @@ class TcpClientSession:
             target_ip, target_port = self.dns_host, self.dns_port
 
         try:
-            tip, tport, _ = await self._resolve_target(target_ip, target_port)
+            tip, tport, target_v6 = await self._resolve_target(target_ip, target_port)
         except OSError as e:
             logging.error("resolución destino %s:%s: %s", target_ip, target_port, e)
             return
@@ -362,6 +365,7 @@ class TcpClientSession:
                 orig_ipv6=ipv6,
                 target_ip=tip,
                 target_port=tport,
+                target_ipv6=target_v6,
                 udp_mtu=self.udp_mtu,
                 udppy_mtu=self.udppy_mtu,
                 linux_tune_sockets=self._linux_tune_sockets,
@@ -370,7 +374,7 @@ class TcpClientSession:
             try:
                 await con.setup_udp()
             except OSError as e:
-                logging.error("UDP connect conid=%s: %s", conid, e)
+                logging.error("UDP socket conid=%s: %s", conid, e)
                 self._by_conid.pop(conid, None)
                 await con.close()
                 return
