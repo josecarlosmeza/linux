@@ -18,18 +18,35 @@ printf '%33s%s%-12s\n' "Vencimiento por usuario"
 tput sgr0
 echo ""
 echo -e "\033[1;33mIndique el usuario cuya fecha de vencimiento desea cambiar.\033[0m"
+echo -e "\033[1;37mFormato: \033[1;32mnombre\033[1;37m o \033[1;32musuario:contraseña\033[1;37m (código de acceso al crear).\033[0m"
 echo -e "\033[1;37m(Sin listado masivo; cuentas locales UID ≥ 1000, excepto nobody.)\033[0m"
 echo ""
-echo -ne "\033[1;32mNombre de usuario:\033[1;37m "
-read -r usuario
+echo -ne "\033[1;32mUsuario o usuario:contraseña:\033[1;37m "
+read -r entrada
 
-usuario="${usuario//$'\r'/}"
-usuario="${usuario#"${usuario%%[![:space:]]*}"}"
-usuario="${usuario%"${usuario##*[![:space:]]}"}"
+entrada="${entrada//$'\r'/}"
+entrada="${entrada#"${entrada%%[![:space:]]*}"}"
+entrada="${entrada%"${entrada##*[![:space:]]}"}"
 
-if [[ -z "$usuario" ]]; then
-    echo -e "\n\033[1;31mNombre vacío.\033[0m\n"
+if [[ -z "$entrada" ]]; then
+    echo -e "\n\033[1;31mEntrada vacía.\033[0m\n"
     exit 1
+fi
+
+_senha_input=""
+if [[ "$entrada" == *:* ]]; then
+    usuario="${entrada%%:*}"
+    _senha_input="${entrada#*:}"
+    usuario="${usuario#"${usuario%%[![:space:]]*}"}"
+    usuario="${usuario%"${usuario##*[![:space:]]}"}"
+    _senha_input="${_senha_input#"${_senha_input%%[![:space:]]*}"}"
+    _senha_input="${_senha_input%"${_senha_input##*[![:space:]]}"}"
+    if [[ -z "$usuario" ]]; then
+        echo -e "\n\033[1;31mFormato inválido: falta el nombre de usuario antes de «:».\033[0m\n"
+        exit 1
+    fi
+else
+    usuario="$entrada"
 fi
 
 if ! id "$usuario" &>/dev/null; then
@@ -41,6 +58,16 @@ _uid=$(id -u "$usuario" 2>/dev/null) || _uid=0
 if [[ "$_uid" -lt 1000 ]] || [[ "$usuario" == "nobody" ]]; then
     echo -e "\n\033[1;31mSolo se permiten cuentas de usuario habituales (UID ≥ 1000).\033[0m\n"
     exit 1
+fi
+
+if [[ -n "$_senha_input" ]]; then
+    if [[ -e "/etc/RedLibre/senha/$usuario" ]]; then
+        _senha_real=$(cat "/etc/RedLibre/senha/$usuario")
+        if [[ "$_senha_input" != "$_senha_real" ]]; then
+            echo -e "\n\033[1;31mLa contraseña indicada no coincide con la del usuario '$usuario'.\033[0m\n"
+            exit 1
+        fi
+    fi
 fi
 
 # --- Resumen breve (equivalente compacto a infousers + cabecera de mudardata) ---

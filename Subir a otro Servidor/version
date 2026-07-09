@@ -1,2 +1,2 @@
-1.0.0.35
-sshmonitor-sshd / sshmonitor-dropbear: no listar filas basura de usuarios.db (comentarios, *, solo números sin cuenta); filtro de log sin grep -w corto; total de sesiones tras tope por usuario; PIDs sshd-session.
+1.0.0.36
+mudardata-rapido (menú opc. 5): acepta nombre de usuario o código usuario:contraseña; valida contraseña contra /etc/RedLibre/senha/ si se indica.
