@@ -1,2 +1,2 @@
-1.0.0.37
-Vencimiento SSH por fecha+hora (misma hora de creación/modificación): /etc/RedLibre/vence/, timer systemd cada 2 min (passwd -l), admin + revendedores + bot; expcleaner/uexpired respetan datetime.
+1.0.0.38
+vence: migración legacy (vence-migrar), infousers con HH:MM, backup admin/rev incluye senha+vence.

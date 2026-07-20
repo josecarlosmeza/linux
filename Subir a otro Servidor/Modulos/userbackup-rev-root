@@ -5,6 +5,7 @@
 # Compatible: mismas líneas que /root/usuarios.db y archivos en senha/
 #====================================================
 [[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
 
 if ! declare -F redlibre_rev_valid_login_name >/dev/null 2>&1; then
     redlibre_rev_valid_login_name() {
@@ -53,12 +54,39 @@ DB_MAIN="/root/usuarios.db"
 _redlibre_rev_expiry_ymd() {
     local u="$1"
     local raw
+    if declare -F redlibre_vence_get >/dev/null 2>&1; then
+        raw=$(redlibre_vence_get "$u" 2>/dev/null) || raw=""
+        if [[ -n "$raw" ]]; then
+            date -d "$raw" '+%Y-%m-%d' 2>/dev/null || date --date="$raw" '+%Y-%m-%d' 2>/dev/null || echo ""
+            return 0
+        fi
+    fi
     raw=$(LANG=en_US.UTF-8 chage -l "$u" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [[ -z "$raw" || "$raw" == "never" ]]; then
         echo "never"
         return 0
     fi
     date -d "$raw" '+%Y-%m-%d' 2>/dev/null || date --date="$raw" '+%Y-%m-%d' 2>/dev/null || echo ""
+}
+
+# Datetime completo para expiry.txt (vence o medianoche del día chage)
+_redlibre_rev_expiry_stamp() {
+    local u="$1"
+    local raw
+    if declare -F redlibre_vence_get >/dev/null 2>&1; then
+        raw=$(redlibre_vence_get "$u" 2>/dev/null) || raw=""
+        if [[ -n "$raw" ]]; then
+            printf '%s\n' "$raw"
+            return 0
+        fi
+    fi
+    local ymd
+    ymd=$(_redlibre_rev_expiry_ymd "$u")
+    if [[ -z "$ymd" || "$ymd" == "never" ]]; then
+        echo "never"
+        return 0
+    fi
+    printf '%s 00:00:00\n' "$ymd"
 }
 
 _redlibre_rev_other_owner() {
@@ -79,7 +107,7 @@ _redlibre_rev_other_owner() {
 _export_rev() {
     local tmp u line
     tmp=$(mktemp -d) || exit 1
-    mkdir -p "$tmp/senha"
+    mkdir -p "$tmp/senha" "$tmp/vence"
 
     _userlist=$(redlibre_rev_list_owned)
     if [[ -z "$_userlist" ]]; then
@@ -105,15 +133,18 @@ _export_rev() {
         else
             echo -e "\033[1;33mAviso: sin contraseña almacenada para $u.\033[0m"
         fi
-        _e=$(_redlibre_rev_expiry_ymd "$u")
+        if [[ -f "/etc/RedLibre/vence/$u" ]]; then
+            cp "/etc/RedLibre/vence/$u" "$tmp/vence/$u"
+        fi
+        _e=$(_redlibre_rev_expiry_stamp "$u")
         echo "${u}|${_e}" >>"$tmp/expiry.txt"
     done <<< "$_userlist"
 
-    echo "1" >"$tmp/.redlibre_rev_backup_version"
+    echo "2" >"$tmp/.redlibre_rev_backup_version"
     echo "revendedor|${REV}|$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" >"$tmp/.redlibre_rev_backup_info"
 
     if ! tar -cf "$DEF_BACKUP" -C "$tmp" \
-        usuarios.db senha expiry.txt .redlibre_rev_backup_version .redlibre_rev_backup_info 2>/dev/null; then
+        usuarios.db senha vence expiry.txt .redlibre_rev_backup_version .redlibre_rev_backup_info 2>/dev/null; then
         echo -e "\033[1;31mError al crear el archivo tar.\033[0m"
         rm -rf "$tmp"
         read -r -p "Pulse ENTER..."
@@ -124,6 +155,7 @@ _export_rev() {
     chmod 600 "$DEF_BACKUP" 2>/dev/null || true
 
     echo -e "\033[1;32mRespaldo creado:\033[0m \033[1;37m$DEF_BACKUP\033[0m"
+    echo -e "\033[1;37m(Incluye senha/ y vence/ — fecha+hora de corte)\033[0m"
     read -r -p "Pulse ENTER..."
 }
 
@@ -155,6 +187,7 @@ _import_rev() {
 
     [[ ! -f "$DB_MAIN" ]] && touch "$DB_MAIN"
     [[ ! -d /etc/RedLibre/senha ]] && mkdir -p /etc/RedLibre/senha
+    [[ ! -d /etc/RedLibre/vence ]] && mkdir -p /etc/RedLibre/vence
 
     declare -A EXPMAP
     if [[ -f "$tmp/expiry.txt" ]]; then
@@ -215,25 +248,41 @@ _import_rev() {
             continue
         fi
 
-        expry="${EXPMAP[$u]:-}"
-        if [[ -z "$expry" || "$expry" == "never" ]]; then
-            if id "$u" &>/dev/null; then
-                expry="$(_redlibre_rev_expiry_ymd "$u")"
+        # Preferir archivo vence del backup; luego expiry.txt (puede traer hora)
+        _cut=""
+        if [[ -f "$tmp/vence/$u" ]]; then
+            _cut=$(tr -d '\r' <"$tmp/vence/$u" | head -1)
+            _cut="${_cut#"${_cut%%[![:space:]]*}"}"
+            _cut="${_cut%"${_cut##*[![:space:]]}"}"
+        fi
+        if [[ -z "$_cut" ]]; then
+            expry="${EXPMAP[$u]:-}"
+            if [[ -z "$expry" || "$expry" == "never" ]]; then
+                if id "$u" &>/dev/null; then
+                    expry="$(_redlibre_rev_expiry_stamp "$u")"
+                fi
+                [[ -z "$expry" || "$expry" == "never" ]] && expry=$(date -d "+30 days" '+%Y-%m-%d %H:%M:%S')
             fi
-            [[ -z "$expry" || "$expry" == "never" ]] && expry=$(date -d "+30 days" '+%Y-%m-%d')
+            if [[ "$expry" == "never" ]]; then
+                expry=$(date -d "+3650 days" '+%Y-%m-%d 00:00:00')
+            fi
+            # Solo fecha → medianoche
+            if [[ "$expry" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                _cut="$expry 00:00:00"
+            else
+                _cut="$expry"
+            fi
         fi
-        if [[ "$expry" == "never" ]]; then
-            expry=$(date -d "+3650 days" '+%Y-%m-%d')
-        fi
+        _ymd=$(date -d "$_cut" '+%Y-%m-%d' 2>/dev/null || date --date="$_cut" '+%Y-%m-%d' 2>/dev/null)
+        [[ -z "$_ymd" ]] && _ymd=$(date -d "+30 days" '+%Y-%m-%d')
 
         if id "$u" &>/dev/null; then
             if ! redlibre_rev_set_password_plain "$u" "$pass"; then
                 echo -e "\033[1;31mFallo al fijar contraseña para $u (chpasswd/openssl).\033[0m"
                 continue
             fi
-            chage -E "$expry" "$u" 2>/dev/null || true
         else
-            useradd -e "$expry" -M -s /bin/false "$u" >/dev/null 2>&1 || {
+            useradd -M -s /bin/false "$u" >/dev/null 2>&1 || {
                 echo -e "\033[1;31mNo se pudo crear $u.\033[0m"
                 continue
             }
@@ -242,6 +291,12 @@ _import_rev() {
                 echo -e "\033[1;31mFallo al fijar contraseña para $u recién creado; usuario eliminado.\033[0m"
                 continue
             fi
+        fi
+
+        if declare -F redlibre_vence_apply >/dev/null 2>&1; then
+            redlibre_vence_apply "$u" "$_cut" 2>/dev/null || chage -E "$_ymd" "$u" 2>/dev/null || true
+        else
+            chage -E "$_ymd" "$u" 2>/dev/null || true
         fi
 
         # Desbloquear por si caducidad-rev o política dejó la cuenta bloqueada (! en shadow)

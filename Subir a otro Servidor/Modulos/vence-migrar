@@ -1,0 +1,23 @@
+#!/bin/bash
+# Migra usuarios SSH sin /etc/RedLibre/vence/ → corte a 00:00 del día de chage.
+# Idempotente: no sobrescribe archivos vence existentes.
+# Uso: vence-migrar   |   vence-migrar --quiet
+[[ $EUID -eq 0 ]] || { echo -e "\033[1;31mEjecute como root.\033[0m"; exit 1; }
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common || {
+    echo -e "\033[1;31mFalta /etc/RedLibre/redlibre-vence-common\033[0m"
+    exit 1
+}
+
+_quiet=0
+[[ "${1:-}" == "--quiet" || "${1:-}" == "-q" ]] && _quiet=1
+
+n=$(redlibre_vence_migrate_legacy)
+[[ -d /etc/RedLibre ]] || mkdir -p /etc/RedLibre
+date "+%Y-%m-%d %H:%M:%S migrados=$n" >>/etc/RedLibre/.vence_migrate_log 2>/dev/null || true
+touch /etc/RedLibre/.vence_migrated 2>/dev/null || true
+
+if [[ "$_quiet" -eq 0 ]]; then
+    echo -e "\033[1;32mMigración vence:\033[1;37m $n cuenta(s) actualizada(s) (medianoche del día de chage).\033[0m"
+    echo -e "\033[1;33mLas que ya tenían archivo vence no se modificaron.\033[0m"
+fi
+exit 0

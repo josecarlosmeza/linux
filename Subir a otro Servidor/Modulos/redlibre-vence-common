@@ -133,3 +133,45 @@ redlibre_vence_msg_hora() {
     local hhmm="$1"
     printf 'Hora de corte (aprox): %s (±2 min)\n' "${hhmm:-—}"
 }
+
+# Info para listados: "etiqueta|epoch|modo"  (modo=vence|chage|never)
+# etiqueta ej: "19/08/2026 15:42" o "Nunca"
+redlibre_vence_display_info() {
+    local u="$1"
+    local raw exp_line fecha epoch
+    if raw=$(redlibre_vence_get "$u" 2>/dev/null); then
+        fecha=$(date --date="$raw" '+%d/%m/%Y %H:%M' 2>/dev/null || date -d "$raw" '+%d/%m/%Y %H:%M' 2>/dev/null)
+        epoch=$(redlibre_vence_parse_epoch "$raw") || epoch=""
+        printf '%s|%s|vence\n' "${fecha:-$raw}" "${epoch:-0}"
+        return 0
+    fi
+    exp_line=$(LANG=en_US.UTF-8 chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "$exp_line" || "$exp_line" == "never" ]]; then
+        printf 'Nunca||never\n'
+        return 0
+    fi
+    fecha=$(date --date="$exp_line" '+%d/%m/%Y' 2>/dev/null || date -d "$exp_line" '+%d/%m/%Y' 2>/dev/null)
+    epoch=$(redlibre_vence_parse_epoch "$exp_line") || epoch=""
+    printf '%s|%s|chage\n' "${fecha:-$exp_line}" "${epoch:-0}"
+}
+
+# Migra cuentas sin archivo vence: corte a medianoche del día de chage (comportamiento legacy).
+# No pisa archivos vence existentes. Ajusta chage al día siguiente (respaldo PAM).
+# stdout: número migrados. Return 0 siempre si puede correr.
+redlibre_vence_migrate_legacy() {
+    local u exp_line ymd cutoff n=0
+    redlibre_vence_ensure_dir
+    while IFS= read -r u; do
+        [[ -z "$u" || "$u" == "root" || "$u" == "nobody" ]] && continue
+        [[ -f "$VENCE_DIR/$u" ]] && continue
+        exp_line=$(LANG=en_US.UTF-8 chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
+        ymd=$(date "+%Y-%m-%d" --date="$exp_line" 2>/dev/null || date "+%Y-%m-%d" -d "$exp_line" 2>/dev/null) || continue
+        [[ "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+        cutoff="$ymd 00:00:00"
+        if redlibre_vence_apply "$u" "$cutoff" 2>/dev/null; then
+            n=$((n + 1))
+        fi
+    done < <(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody)
+    printf '%s\n' "$n"
+}

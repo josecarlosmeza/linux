@@ -1,5 +1,7 @@
 #!/bin/bash
 
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+
 # Limpiar pantalla y mostrar lista general
 clear
 echo -e "\E[44;1;37m Usuario         Contraseña       Limite      Fecha expiración  \E[0m"
@@ -17,20 +19,33 @@ do
     # Conteo de procesos del usuario
     conexiones=$(ps -u "$users" | grep -c sshd)
 
-    # Lógica de Fecha (LANG=en para formato consistente de chage)
-    datauser=$(LANG=en_US.UTF-8 chage -l "$users" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    if [[ -z "$datauser" || "$datauser" == "never" ]]; then
+    # Fecha/hora: preferir vence
+    if declare -F redlibre_vence_display_info >/dev/null 2>&1; then
+        IFS='|' read -r fecha_venc exp_sec _modo <<<"$(redlibre_vence_display_info "$users")"
+    else
+        datauser=$(LANG=en_US.UTF-8 chage -l "$users" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ -z "$datauser" || "$datauser" == "never" ]]; then
+            fecha_venc="Nunca"; exp_sec=""; _modo="never"
+        else
+            fecha_venc=$(date --date="$datauser" '+%d/%m/%Y' 2>/dev/null || date -d "$datauser" '+%d/%m/%Y' 2>/dev/null)
+            exp_sec=$(date +%s --date="$datauser" 2>/dev/null || date +%s -d "$datauser" 2>/dev/null)
+            _modo="chage"
+        fi
+    fi
+    if [[ "$_modo" == "never" || "$fecha_venc" == "Nunca" ]]; then
         data="\033[1;33mNunca\033[0m"
     else
-        fecha_venc=$(date --date="$datauser" '+%d/%m/%Y' 2>/dev/null || date -d "$datauser" '+%d/%m/%Y' 2>/dev/null)
-        exp_sec=$(date +%s --date="$datauser" 2>/dev/null || date +%s -d "$datauser" 2>/dev/null)
         now_sec=$(date +%s)
-        if [[ -n "$exp_sec" ]]; then
+        if [[ -n "$exp_sec" && "$exp_sec" != "0" ]]; then
             if [[ $now_sec -ge $exp_sec ]]; then
                 data="\033[1;31m$fecha_venc (Expirado)\033[0m"
             else
                 dias=$(( (exp_sec - now_sec) / 86400 ))
-                data="\033[1;32m$fecha_venc ($dias días)\033[0m"
+                if [[ "$_modo" == "vence" ]]; then
+                    data="\033[1;32m$fecha_venc ($dias d · ±2 min)\033[0m"
+                else
+                    data="\033[1;32m$fecha_venc ($dias días)\033[0m"
+                fi
             fi
         else
             data="\033[1;37m$fecha_venc\033[0m"
@@ -73,7 +88,6 @@ if [[ -n "$selection" ]]; then
         
         if [[ $num_con -gt 0 ]]; then
             d_estado="\033[1;32mCONECTADO\033[0m"
-            # Formatear lista de tiempos si hay varias sesiones
             tiempos=$(echo "$d_conexiones" | xargs | sed 's/ / | /g')
         else
             d_estado="\033[1;31mDESCONECTADO\033[0m"
@@ -81,12 +95,17 @@ if [[ -n "$selection" ]]; then
         fi
 
         [[ -e /etc/RedLibre/senha/$selection ]] && d_pass=$(cat /etc/RedLibre/senha/$selection) || d_pass="Null"
-        d_val_raw=$(LANG=en_US.UTF-8 chage -l "$selection" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -z "$d_val_raw" || "$d_val_raw" == "never" ]]; then
-            d_val="Nunca"
+        if declare -F redlibre_vence_display_info >/dev/null 2>&1; then
+            IFS='|' read -r d_val _de _dm <<<"$(redlibre_vence_display_info "$selection")"
+            [[ "$_dm" == "vence" ]] && d_val="$d_val (±2 min)"
         else
-            d_val=$(date --date="$d_val_raw" '+%d/%m/%Y' 2>/dev/null || date -d "$d_val_raw" '+%d/%m/%Y' 2>/dev/null)
-            [[ -z "$d_val" ]] && d_val="$d_val_raw"
+            d_val_raw=$(LANG=en_US.UTF-8 chage -l "$selection" 2>/dev/null | grep "Account expires" | awk -F': ' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ -z "$d_val_raw" || "$d_val_raw" == "never" ]]; then
+                d_val="Nunca"
+            else
+                d_val=$(date --date="$d_val_raw" '+%d/%m/%Y' 2>/dev/null || date -d "$d_val_raw" '+%d/%m/%Y' 2>/dev/null)
+                [[ -z "$d_val" ]] && d_val="$d_val_raw"
+            fi
         fi
 
         echo -e "\033[1;36m USUARIO:     \033[1;37m$selection"
