@@ -67,6 +67,7 @@ fi
 _cleanup_markers() {
     grep -v "^${user}[[:space:]]" "$database" > /tmp/ph_rev && mv /tmp/ph_rev "$database"
     rm -f "/etc/RedLibre/senha/$user"
+    rm -f "/etc/RedLibre/vence/$user"
     rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
     redlibre_rev_unregister_user "$user"
 }

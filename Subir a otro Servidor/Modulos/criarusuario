@@ -4,6 +4,8 @@
 #   OPTIMIZADO PARA: ALMALINUX
 #====================================================
 
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+
 # Instalación de dependencias
 for pkg in perl curl; do
     command -v $pkg >/dev/null 2>&1 || dnf install -y $pkg
@@ -12,6 +14,7 @@ done
 # Directorios de base de datos
 [[ ! -d /etc/RedLibre/senha ]] && mkdir -p /etc/RedLibre/senha
 [[ ! -f /root/usuarios.db ]] && touch /root/usuarios.db
+declare -F redlibre_vence_ensure_dir >/dev/null 2>&1 && redlibre_vence_ensure_dir
 
 clear
 tput setaf 7; tput setab 4; tput bold; printf '%30s%s%-15s\n' "Crear Usuario SSH"; tput sgr0
@@ -33,14 +36,30 @@ echo -ne "\033[1;32mContraseña:\033[1;37m "; read password
 echo -ne "\033[1;32mDías de validez:\033[1;37m "; read dias
 echo -ne "\033[1;32mLímite de conexiones:\033[1;37m "; read sshlimiter
 
-# Cálculos de fechas y horas
-final=$(date "+%Y-%m-%d" -d "+$dias days")
-gui=$(date "+%d/%m/%Y" -d "+$dias days")
+if ! [[ "$dias" =~ ^[0-9]+$ ]] || [[ "$dias" -lt 1 ]]; then
+    echo -e "\n\033[1;31mDías inválidos.\033[0m\n"
+    exit 1
+fi
+
 hora_cambio=$(date "+%H:%M:%S")
 
-# Creación del usuario (AlmaLinux)
+# Creación del usuario (sin -e: el vencimiento lo fija redlibre_vence_*)
 pass=$(perl -e 'print crypt($ARGV[0], "password")' "$password")
-useradd -e "$final" -M -s /bin/false -p "$pass" "$username" >/dev/null 2>&1
+useradd -M -s /bin/false -p "$pass" "$username" >/dev/null 2>&1
+
+_vence_line=""
+if declare -F redlibre_vence_set_from_days >/dev/null 2>&1; then
+    _vence_line=$(redlibre_vence_set_from_days "$username" "$dias") || _vence_line=""
+fi
+if [[ -n "$_vence_line" ]]; then
+    IFS='|' read -r _cut gui gui_hora <<<"$_vence_line"
+else
+    # Fallback legacy (solo fecha, medianoche)
+    final=$(date "+%Y-%m-%d" -d "+$dias days")
+    gui=$(date "+%d/%m/%Y" -d "+$dias days")
+    gui_hora="00:00"
+    chage -E "$final" "$username" 2>/dev/null || true
+fi
 
 # Registro interno
 echo "$password" > "/etc/RedLibre/senha/$username"
@@ -54,7 +73,7 @@ echo -e "\033[1;37mUsuario: \033[1;32m$username\033[0m"
 echo -e "\033[1;37mContraseña: \033[1;32m$password\033[0m"
 echo -e "\033[1;37mLímite de conexiones: \033[1;32m$sshlimiter\033[0m"
 echo -e "\033[1;37mFecha de vencimiento: \033[1;33m$gui\033[0m"
-echo -e "\033[1;37mHora de corte (aprox): 00:00:01 AM\033[0m"
+echo -e "\033[1;37mHora de corte (aprox): \033[1;33m${gui_hora:-—} (±2 min)\033[0m"
 echo -e "\033[1;37mCambio realizado a las: $hora_cambio\033[0m"
 echo ""
 echo -e "\033[1;37mCódigo de acceso: \033[1;32m$username:$password\033[0m"

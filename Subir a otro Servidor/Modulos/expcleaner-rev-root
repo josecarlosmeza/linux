@@ -4,6 +4,7 @@
 # Comparación por fecha calendario (YYYY-MM-DD), más robusto que solo segundos.
 #====================================================
 [[ -f /etc/RedLibre/redlibre-rev-common ]] && . /etc/RedLibre/redlibre-rev-common || exit 1
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
 if ! declare -F redlibre_rev_is_managed_vpn_user >/dev/null 2>&1; then
     redlibre_rev_is_managed_vpn_user() {
         local _u="$1"
@@ -17,7 +18,7 @@ fi
 redlibre_rev_init
 
 database="/root/usuarios.db"
-today=$(date +%Y-%m-%d)
+now_sec=$(date +%s)
 
 remove_ovp() {
     if [[ -e /etc/debian_version ]]; then
@@ -59,24 +60,35 @@ while IFS= read -r user; do
     id "$user" &>/dev/null || continue
     redlibre_rev_is_managed_vpn_user "$user" || continue
 
-    expdate=$(LC_ALL=C chage -l "$user" 2>/dev/null | sed -n 's/^Account expires[[:space:]]*:[[:space:]]*//p' | head -1)
-    expdate=$(printf '%s' "$expdate" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-    [[ -z "$expdate" || "$expdate" == "never" ]] && continue
-
-    datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
-    [[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
-
-    exp_flat=$(date --date="$expdate" '+%Y-%m-%d' 2>/dev/null || date -d "$expdate" '+%Y-%m-%d' 2>/dev/null)
-    if [[ -z "$exp_flat" ]]; then
-        tput setaf 1 2>/dev/null || true
-        printf '%-15s%-17s%s\n' "$user" "$datanormal" " ERROR (fecha)"
-        tput sgr0 2>/dev/null || true
-        continue
+    # Preferir datetime de vence; fallback chage (día calendario)
+    expired=0
+    datanormal=""
+    if declare -F redlibre_vence_get >/dev/null 2>&1; then
+        _vraw=$(redlibre_vence_get "$user" 2>/dev/null) || _vraw=""
+        if [[ -n "$_vraw" ]]; then
+            datanormal=$(date --date="$_vraw" '+%d/%m/%Y %H:%M' 2>/dev/null || date -d "$_vraw" '+%d/%m/%Y %H:%M' 2>/dev/null)
+            _cut=$(redlibre_vence_parse_epoch "$_vraw" 2>/dev/null) || _cut=""
+            [[ -n "$_cut" && "$now_sec" -ge "$_cut" ]] && expired=1
+        fi
+    fi
+    if [[ -z "$datanormal" ]]; then
+        expdate=$(LC_ALL=C chage -l "$user" 2>/dev/null | sed -n 's/^Account expires[[:space:]]*:[[:space:]]*//p' | head -1)
+        expdate=$(printf '%s' "$expdate" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$expdate" || "$expdate" == "never" ]] && continue
+        datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
+        [[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
+        exp_flat=$(date --date="$expdate" '+%Y-%m-%d' 2>/dev/null || date -d "$expdate" '+%Y-%m-%d' 2>/dev/null)
+        if [[ -z "$exp_flat" ]]; then
+            tput setaf 1 2>/dev/null || true
+            printf '%-15s%-17s%s\n' "$user" "$datanormal" " ERROR (fecha)"
+            tput sgr0 2>/dev/null || true
+            continue
+        fi
+        today=$(date +%Y-%m-%d)
+        [[ "$today" > "$exp_flat" ]] && expired=1
     fi
 
-    # Caduca cuando la fecha de hoy es posterior a la fecha de cierre (YYYY-MM-DD)
-    if [[ "$today" > "$exp_flat" ]]; then
+    if [[ "$expired" -eq 1 ]]; then
         tput setaf 3 2>/dev/null || true
         tput bold 2>/dev/null || true
         printf '%-15s%-17s%s' "$user" "$datanormal" ""
@@ -98,6 +110,7 @@ while IFS= read -r user; do
         fi
         rm -f "/etc/RedLibre/senha/$user"
         rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
+        declare -F redlibre_vence_rm >/dev/null 2>&1 && redlibre_vence_rm "$user"
         redlibre_rev_unregister_user "$user"
         continue
     fi

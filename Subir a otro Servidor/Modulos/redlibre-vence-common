@@ -1,0 +1,135 @@
+#====================================================
+# RedLibre — vencimiento por fecha+hora (misma hora de creación/modificación)
+# Archivo: /etc/RedLibre/vence/<usuario>  →  "YYYY-MM-DD HH:MM:SS"
+# chage -E se fija al día SIGUIENTE al corte (respaldo PAM; el corte fino lo hace uexpired).
+# Timer systemd (~2 min): bloquea con passwd -l + pkill al alcanzar el datetime.
+#====================================================
+
+VENCE_DIR="${VENCE_DIR:-/etc/RedLibre/vence}"
+
+redlibre_vence_ensure_dir() {
+    mkdir -p "$VENCE_DIR" 2>/dev/null || true
+}
+
+# Epoch desde "YYYY-MM-DD HH:MM:SS" (o solo fecha).
+redlibre_vence_parse_epoch() {
+    local raw="$1"
+    raw="${raw//$'\r'/}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ -n "$raw" ]] || return 1
+    date +%s --date="$raw" 2>/dev/null || date +%s -d "$raw" 2>/dev/null
+}
+
+# Lee datetime de corte (stdout) o vacío.
+redlibre_vence_get() {
+    local u="$1"
+    local f="$VENCE_DIR/$u"
+    [[ -f "$f" ]] || return 1
+    local raw
+    raw=$(tr -d '\r' <"$f" | head -1)
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ -n "$raw" ]] || return 1
+    printf '%s\n' "$raw"
+}
+
+# Epoch de corte: archivo vence si existe; si no, Account expires (chage) a 00:00.
+redlibre_vence_cutoff_epoch() {
+    local u="$1"
+    local raw exp_line
+    if raw=$(redlibre_vence_get "$u" 2>/dev/null); then
+        redlibre_vence_parse_epoch "$raw"
+        return $?
+    fi
+    exp_line=$(LANG=en_US.UTF-8 chage -l "$u" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -n "$exp_line" && "$exp_line" != "never" ]] || return 1
+    redlibre_vence_parse_epoch "$exp_line"
+}
+
+# 0 = expirado (now >= cutoff)
+redlibre_vence_is_expired() {
+    local u="$1"
+    local now cut
+    now=$(date +%s)
+    cut=$(redlibre_vence_cutoff_epoch "$u") || return 1
+    [[ "$now" -ge "$cut" ]]
+}
+
+# Día de chage = día siguiente al corte (evita bloqueo PAM a medianoche del día de corte).
+redlibre_vence_chage_day_after() {
+    local cutoff="$1"
+    local ymd
+    ymd=$(date "+%Y-%m-%d" --date="$cutoff" 2>/dev/null || date "+%Y-%m-%d" -d "$cutoff" 2>/dev/null) || return 1
+    date "+%Y-%m-%d" --date="$ymd + 1 day" 2>/dev/null || date "+%Y-%m-%d" -d "$ymd + 1 day" 2>/dev/null
+}
+
+# Escribe vence + chage -E (día+1) + desbloquea cuenta si estaba locked.
+# $1=usuario  $2=cutoff "YYYY-MM-DD HH:MM:SS"
+redlibre_vence_apply() {
+    local u="$1"
+    local cutoff="$2"
+    local chage_day
+    [[ -n "$u" && -n "$cutoff" ]] || return 1
+    id "$u" &>/dev/null || return 1
+    redlibre_vence_ensure_dir
+    chage_day=$(redlibre_vence_chage_day_after "$cutoff") || return 1
+    printf '%s\n' "$cutoff" >"$VENCE_DIR/$u"
+    chmod 644 "$VENCE_DIR/$u" 2>/dev/null || true
+    chage -E "$chage_day" "$u" 2>/dev/null || return 1
+    passwd -u "$u" >/dev/null 2>&1 || true
+    return 0
+}
+
+# Corte = ahora + N días (misma hora).
+# stdout: línea "cutoff|gui_fecha|gui_hora"  (gui_fecha=DD/MM/YYYY)
+redlibre_vence_set_from_days() {
+    local u="$1"
+    local days="$2"
+    local cutoff gui_f gui_h
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
+    cutoff=$(date "+%Y-%m-%d %H:%M:%S" --date="+$days days" 2>/dev/null || date "+%Y-%m-%d %H:%M:%S" -d "+$days days" 2>/dev/null) || return 1
+    redlibre_vence_apply "$u" "$cutoff" || return 1
+    gui_f=$(date "+%d/%m/%Y" --date="$cutoff" 2>/dev/null || date "+%d/%m/%Y" -d "$cutoff" 2>/dev/null)
+    gui_h=$(date "+%H:%M" --date="$cutoff" 2>/dev/null || date "+%H:%M" -d "$cutoff" 2>/dev/null)
+    printf '%s|%s|%s\n' "$cutoff" "$gui_f" "$gui_h"
+}
+
+# Corte = fecha YYYY-MM-DD + hora actual de modificación.
+redlibre_vence_set_from_ymd() {
+    local u="$1"
+    local ymd="$2"
+    local hora cutoff gui_f gui_h
+    [[ "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+    hora=$(date "+%H:%M:%S")
+    cutoff="$ymd $hora"
+    redlibre_vence_apply "$u" "$cutoff" || return 1
+    gui_f=$(date "+%d/%m/%Y" --date="$cutoff" 2>/dev/null || date "+%d/%m/%Y" -d "$cutoff" 2>/dev/null)
+    gui_h=$(date "+%H:%M" --date="$cutoff" 2>/dev/null || date "+%H:%M" -d "$cutoff" 2>/dev/null)
+    printf '%s|%s|%s\n' "$cutoff" "$gui_f" "$gui_h"
+}
+
+redlibre_vence_rm() {
+    local u="$1"
+    [[ -n "$u" ]] || return 0
+    rm -f "$VENCE_DIR/$u" 2>/dev/null || true
+}
+
+# Bloqueo fino: passwd -l + pkill si ya pasó el datetime (solo con archivo vence).
+redlibre_vence_lock_if_due() {
+    local u="$1"
+    local raw cut now
+    raw=$(redlibre_vence_get "$u" 2>/dev/null) || return 1
+    cut=$(redlibre_vence_parse_epoch "$raw") || return 1
+    now=$(date +%s)
+    [[ "$now" -ge "$cut" ]] || return 1
+    passwd -l "$u" >/dev/null 2>&1 || true
+    pkill -u "$u" 2>/dev/null || true
+    return 0
+}
+
+# Texto UI: hora de corte aproximada (± cadencia del timer).
+redlibre_vence_msg_hora() {
+    local hhmm="$1"
+    printf 'Hora de corte (aprox): %s (±2 min)\n' "${hhmm:-—}"
+}

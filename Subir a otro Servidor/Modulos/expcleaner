@@ -1,5 +1,7 @@
 #!/bin/bash
 datenow=$(date +%s)
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+
 remove_ovp () {
 if [[ -e /etc/debian_version ]]; then
 	GROUPNAME=nogroup
@@ -24,14 +26,27 @@ echo ""
 # Solo usuarios normales (UID >= 1000), nunca root ni nobody
 for user in $(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody); do
 	[[ "$user" == "root" ]] && continue
-	expdate=$(LANG=en_US.UTF-8 chage -l "$user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-	[[ -z "$expdate" || "$expdate" == "never" ]] && continue
-	datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
+
+	# Preferir datetime de /etc/RedLibre/vence; fallback chage
+	expsec=""
+	datanormal=""
+	if declare -F redlibre_vence_get >/dev/null 2>&1; then
+		_vraw=$(redlibre_vence_get "$user" 2>/dev/null) || _vraw=""
+		if [[ -n "$_vraw" ]]; then
+			expsec=$(redlibre_vence_parse_epoch "$_vraw" 2>/dev/null) || expsec=""
+			datanormal=$(date --date="$_vraw" '+%d/%m/%Y %H:%M' 2>/dev/null || date -d "$_vraw" '+%d/%m/%Y %H:%M' 2>/dev/null)
+		fi
+	fi
+	if [[ -z "$expsec" ]]; then
+		expdate=$(LANG=en_US.UTF-8 chage -l "$user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		[[ -z "$expdate" || "$expdate" == "never" ]] && continue
+		datanormal=$(date --date="$expdate" '+%d/%m/%Y' 2>/dev/null || date -d "$expdate" '+%d/%m/%Y' 2>/dev/null)
+		[[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
+		expsec=$(date +%s --date="$expdate" 2>/dev/null || date +%s -d "$expdate" 2>/dev/null)
+	fi
 	[[ -z "$datanormal" ]] && datanormal="(fecha inválida)"
 	tput setaf 3 ; tput bold ; printf '%-15s%-17s%s' "$user" "$datanormal" ; tput sgr0
-	expsec=$(date +%s --date="$expdate" 2>/dev/null || date +%s -d "$expdate" 2>/dev/null)
 	[[ -z "$expsec" ]] && echo " ERROR (fecha)" && continue
-	# Aún no vencido: instante actual < fin de vigencia (sin bc/grep: evita "stray \ before -" en grep reciente)
 	tput setaf 2 ; tput bold
 	if [[ "$datenow" -lt "$expsec" ]]; then
 		echo "VÁLIDO   NO REMOVIDO"
@@ -43,6 +58,8 @@ for user in $(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody); do
 	pkill -u "$user" 2>/dev/null || true
 	userdel --force "$user" 2>/dev/null || true
 	[[ -f /root/usuarios.db ]] && grep -v "^${user}[[:space:]]" /root/usuarios.db > /tmp/ph 2>/dev/null && mv /tmp/ph /root/usuarios.db
+	rm -f "/etc/RedLibre/senha/$user" 2>/dev/null
+	declare -F redlibre_vence_rm >/dev/null 2>&1 && redlibre_vence_rm "$user"
 	if [[ -e /etc/openvpn/server.conf ]]; then
 		remove_ovp $user
 	fi

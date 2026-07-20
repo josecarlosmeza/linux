@@ -1,5 +1,5 @@
 [Unit]
-Description=RedLibre — actualizar contador de usuarios expirados (/etc/RedLibre/Exp)
+Description=RedLibre — cortar/contar usuarios SSH vencidos (vence + chage)
 
 [Service]
 Type=oneshot

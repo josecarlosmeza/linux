@@ -1,16 +1,32 @@
 #!/bin/bash
-# Cuenta usuarios (UID >= 1000) con fecha de expiración de cuenta ya pasada y escribe /etc/RedLibre/Exp
-# Debe ejecutarse de forma síncrona (cron / list / tras expcleaner) para que el menú muestre el número correcto.
+# Cuenta usuarios (UID >= 1000) ya vencidos y escribe /etc/RedLibre/Exp.
+# Si existe /etc/RedLibre/vence/<user>, usa datetime exacto y aplica passwd -l + pkill.
+# Sin archivo vence: fallback a Account expires (chage), como antes.
 [[ -d /etc/RedLibre ]] || mkdir -p /etc/RedLibre
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+[[ -d /etc/RedLibre/vence ]] || mkdir -p /etc/RedLibre/vence 2>/dev/null || true
+
 userexp=0
 _now=$(date +%s)
 while IFS= read -r _user; do
     [[ -z "$_user" || "$_user" == "root" ]] && continue
-    exp_line=$(LANG=en_US.UTF-8 chage -l "$_user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
-    exp_sec=$(date +%s --date="$exp_line" 2>/dev/null || date +%s -d "$exp_line" 2>/dev/null)
-    [[ -z "$exp_sec" ]] && continue
-    [[ "$_now" -gt "$exp_sec" ]] && userexp=$((userexp + 1))
+
+    # Corte fino: bloquear si el datetime de vence ya pasó
+    if declare -F redlibre_vence_lock_if_due >/dev/null 2>&1; then
+        redlibre_vence_lock_if_due "$_user" || true
+    fi
+
+    _cut=""
+    if declare -F redlibre_vence_cutoff_epoch >/dev/null 2>&1; then
+        _cut=$(redlibre_vence_cutoff_epoch "$_user" 2>/dev/null) || _cut=""
+    fi
+    if [[ -z "$_cut" ]]; then
+        exp_line=$(LANG=en_US.UTF-8 chage -l "$_user" 2>/dev/null | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
+        _cut=$(date +%s --date="$exp_line" 2>/dev/null || date +%s -d "$exp_line" 2>/dev/null)
+    fi
+    [[ -z "$_cut" ]] && continue
+    [[ "$_now" -ge "$_cut" ]] && userexp=$((userexp + 1))
 done < <(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody)
 
 printf '%s\n' "$userexp" >/etc/RedLibre/Exp

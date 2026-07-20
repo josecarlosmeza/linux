@@ -60,6 +60,7 @@ else
 		echo -e "\E[41;1;37m Usuario $user removido com sucesso! \E[0m"
 		grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 		rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
+		rm -f /etc/RedLibre/vence/$user 2>/dev/null
 		if [[ -e /etc/openvpn/server.conf ]]; then
 			remove_ovp $user
 		fi
@@ -72,6 +73,7 @@ else
 			echo -e "\E[41;1;37m Usuario $user removido com sucesso! \E[0m"
 			grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 			rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
+			rm -f /etc/RedLibre/vence/$user 2>/dev/null
 			if [[ -e /etc/openvpn/server.conf ]]; then
 				remove_ovp $user
 		    fi
@@ -84,6 +86,7 @@ else
 			echo -e "\E[41;1;37m Usuario $user removido com sucesso! \E[0m"
 			grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 			rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
+			rm -f /etc/RedLibre/vence/$user 2>/dev/null
 			if [[ -e /etc/openvpn/server.conf ]]; then
 				remove_ovp $user
 		    fi
@@ -103,10 +106,12 @@ elif [[ "$resp" = "2" ]]; then
 		for user in $(cat /etc/passwd |awk -F : '$3 > 900 {print $1}' |grep -vi "nobody"); do
 			pkill -f $user > /dev/null 2>&1
 			userdel --force $user > /dev/null 2>&1
+			rm -f /etc/RedLibre/senha/$user /etc/RedLibre/vence/$user 2>/dev/null
         if [[ -e /etc/openvpn/server.conf ]]; then
 		   remove_ovp $user
 		fi
 		done
+		rm -rf /etc/RedLibre/vence 2>/dev/null; mkdir -p /etc/RedLibre/vence
 		rm $HOME/usuarios.db && touch $HOME/usuarios.db
         rm *.zip > /dev/null 2>&1
 		echo -e "\n\033[1;32mUSUARIOS REMOVIDOS COM SUCESSO!\033[0m"

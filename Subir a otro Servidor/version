@@ -1,2 +1,2 @@
-1.0.0.36
-mudardata-rapido (menú opc. 5): acepta nombre de usuario o código usuario:contraseña; valida contraseña contra /etc/RedLibre/senha/ si se indica.
+1.0.0.37
+Vencimiento SSH por fecha+hora (misma hora de creación/modificación): /etc/RedLibre/vence/, timer systemd cada 2 min (passwd -l), admin + revendedores + bot; expcleaner/uexpired respetan datetime.

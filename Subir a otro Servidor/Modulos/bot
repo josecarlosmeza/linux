@@ -208,13 +208,22 @@ criar_user() {
     senha=$(sed -n '2 p' $file_user | cut -d' ' -f2)
     limite=$(sed -n '3 p' $file_user | cut -d' ' -f2)
     data=$(sed -n '4 p' $file_user | cut -d' ' -f2)
-    validade=$(echo "$data" | awk -F'/' '{print $2FS$1FS$3}' | xargs -i date -d'{}' +%Y/%m/%d)
-
-    useradd -M -N -s /bin/false $usuario -e $validade >/dev/null 2>&1
+    dias_bot=$(sed -n '5 p' $file_user 2>/dev/null | awk '{print $2}')
+    useradd -M -N -s /bin/false $usuario >/dev/null 2>&1
     (
         echo "${senha}"
         echo "${senha}"
     ) | passwd "${usuario}" >/dev/null 2>&1
+    [[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+    if [[ "$dias_bot" =~ ^[0-9]+$ ]] && declare -F redlibre_vence_set_from_days >/dev/null 2>&1; then
+        redlibre_vence_set_from_days "$usuario" "$dias_bot" >/dev/null
+    elif declare -F redlibre_vence_set_from_ymd >/dev/null 2>&1; then
+        _ymd=$(date -d "$(echo "$data" | awk -F'/' '{print $2"/"$1"/"$3}')" "+%Y-%m-%d" 2>/dev/null)
+        [[ "$_ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && redlibre_vence_set_from_ymd "$usuario" "$_ymd" >/dev/null
+    else
+        validade=$(echo "$data" | awk -F'/' '{print $2FS$1FS$3}' | xargs -i date -d'{}' +%Y/%m/%d)
+        chage -E "$validade" "$usuario" >/dev/null 2>&1
+    fi
     [[ "${message_from_id[$id]}" != "$id_admin" ]] && {
         echo "$usuario:$senha:$info_data:$limite" >/etc/bot/revenda/${message_from_username}/usuarios/$usuario
         echo "$usuario:$senha:$info_data:$limite" >/etc/bot/info-users/$usuario
@@ -402,9 +411,15 @@ alterar_data_user() {
     usuario=$1
     inputdate=$2
     database="/root/usuarios.db"
+    [[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
     [[ "$(echo -e "$inputdate" | sed -e 's/[^/]//ig')" != '//' ]] && {
         udata=$(date "+%d/%m/%Y" -d "+$inputdate days")
-        sysdate="$(echo "$udata" | awk -v FS=/ -v OFS=- '{print $3,$2,$1}')"
+        if declare -F redlibre_vence_set_from_days >/dev/null 2>&1; then
+            redlibre_vence_set_from_days "$usuario" "$inputdate" >/dev/null
+        else
+            sysdate="$(echo "$udata" | awk -v FS=/ -v OFS=- '{print $3,$2,$1}')"
+            chage -E $sysdate $usuario
+        fi
     } || {
         udata=$(echo -e "$inputdate")
         sysdate="$(echo -e "$inputdate" | awk -v FS=/ -v OFS=- '{print $3,$2,$1}')"
@@ -418,8 +433,12 @@ alterar_data_user() {
             _erro='1'
             return 0
         }
+        if declare -F redlibre_vence_set_from_ymd >/dev/null 2>&1; then
+            redlibre_vence_set_from_ymd "$usuario" "$sysdate" >/dev/null
+        else
+            chage -E $sysdate $usuario
+        fi
     }
-    chage -E $sysdate $usuario
     [[ -e /etc/bot/revenda/${message_from_username}/usuarios/$usuario ]] && {
         data2=$(cat /etc/bot/info-users/$usuario | awk -F : {'print $3'})
         sed -i "s;$data2;$udata;" /etc/bot/info-users/$usuario
@@ -983,16 +1002,23 @@ fun_exp_user() {
             return 0
         }
         datenow=$(date +%s)
+        [[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
         for user in $(cat /etc/passwd | awk -F : '$3 >= 1000 {print $1}' | grep -v nobody); do
-            expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            echo $expdate | grep -q never && continue
-            datanormal=$(date -d"$expdate" '+%d/%m/%Y')
-            expsec=$(date +%s --date="$expdate")
-            [[ "$datenow" -lt "$expsec" ]] && continue
+            expsec=""
+            if declare -F redlibre_vence_cutoff_epoch >/dev/null 2>&1; then
+                expsec=$(redlibre_vence_cutoff_epoch "$user" 2>/dev/null) || expsec=""
+            fi
+            if [[ -z "$expsec" ]]; then
+                expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                echo $expdate | grep -q never && continue
+                expsec=$(date +%s --date="$expdate")
+            fi
+            [[ -z "$expsec" || "$datenow" -lt "$expsec" ]] && continue
             pkill -u $user
             userdel --force $user
             grep -v ^$user[[:space:]] /root/usuarios.db >/tmp/ph
             cat /tmp/ph >/root/usuarios.db
+            rm -f /etc/RedLibre/senha/$user /etc/RedLibre/vence/$user 2>/dev/null
             [[ -e /etc/bot/info-users/$user ]] && rm /etc/bot/info-users/$user
             [[ -e /etc/RedLibre/userteste/$user.sh ]] && rm /etc/RedLibre/userteste/$user.sh
             [[ "$(ls /etc/bot/revenda)" != '0' ]] && {
@@ -1016,17 +1042,24 @@ fun_exp_user() {
             return 0
         }
         datenow=$(date +%s)
+        [[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
         dir_user="/etc/bot/revenda/${callback_query_from_username}/usuarios"
         for user in $(ls $dir_user); do
-            expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            echo $expdate | grep -q never && continue
-            datanormal=$(date -d"$expdate" '+%d/%m/%Y')
-            expsec=$(date +%s --date="$expdate")
-            [[ "$datenow" -lt "$expsec" ]] && continue
+            expsec=""
+            if declare -F redlibre_vence_cutoff_epoch >/dev/null 2>&1; then
+                expsec=$(redlibre_vence_cutoff_epoch "$user" 2>/dev/null) || expsec=""
+            fi
+            if [[ -z "$expsec" ]]; then
+                expdate=$(LANG=en_US.UTF-8 chage -l "$user" | awk -F: '/Account expires/{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                echo $expdate | grep -q never && continue
+                expsec=$(date +%s --date="$expdate")
+            fi
+            [[ -z "$expsec" || "$datenow" -lt "$expsec" ]] && continue
             pkill -f $user
             userdel --force $user
             grep -v ^$user[[:space:]] /root/usuarios.db >/tmp/ph
             cat /tmp/ph >/root/usuarios.db
+            rm -f /etc/RedLibre/senha/$user /etc/RedLibre/vence/$user 2>/dev/null
             [[ -e /etc/RedLibre/userteste/$user.sh ]] && rm /etc/RedLibre/userteste/$user.sh
             [[ -e "$dir_user/$user" ]] && rm $dir_user/$user
         done
@@ -1951,6 +1984,7 @@ while :; do
                     }
                     info_data=$(date '+%d/%m/%C%y' -d " +${message_text[$id]} days")
                     echo "Validade: $info_data" >>$CAD_ARQ
+                    echo "Dias: ${message_text[$id]}" >>$CAD_ARQ
                     criar_user $CAD_ARQ
                     [[ "(grep -w ${message_text[$id]} /etc/passwd)" = '0' ]] && {
                         ShellBot.sendMessage --chat_id ${message_chat_id[$id]} \

@@ -18,6 +18,7 @@ if command -v timedatectl &>/dev/null; then timedatectl set-timezone America/Sao
 }
 [[ ! -d /etc/RedLibre ]] && mkdir /etc/RedLibre
 [[ ! -d /etc/RedLibre/senha ]] && mkdir /etc/RedLibre/senha
+[[ ! -d /etc/RedLibre/vence ]] && mkdir /etc/RedLibre/vence
 [[ ! -e /etc/RedLibre/Exp ]] && touch /etc/RedLibre/Exp
 [[ ! -d /etc/RedLibre/userteste ]] && mkdir /etc/RedLibre/userteste
 [[ ! -d /etc/bot ]] && mkdir /etc/bot
@@ -39,12 +40,12 @@ echo "PasswordAuthentication yes" >>/etc/ssh/sshd_config
 _dir1='/bin'
 _dir2='/etc/RedLibre'
 rm -f $_dir2/ShellBot.sh $_dir2/cabecalho $_dir2/open.py $_dir2/proxy.py >/dev/null 2>&1
-_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "mudardata-rapido" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "gestor-limitador" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py" "gestor-revendedores" "menu-revendedor" "redlibre-rev-common" "revendedor-sshd-lock" "revendedor-caducidad-apply" "criarusuario-rev-root" "criarteste-rev-root" "remover-rev-root" "alterarsenha-rev-root" "mudardata-rev-root" "alterarlimite-rev-root" "infousers-rev-root" "userbackup-rev-root" "expcleaner-rev-root" "sshmonitor-rev-root")
+_mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "mudardata-rapido" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "gestor-limitador" "uexpired" "instsqd" "cabecalho" "bot" "open.py" "proxy.py" "gestor-revendedores" "menu-revendedor" "redlibre-rev-common" "redlibre-vence-common" "revendedor-sshd-lock" "revendedor-caducidad-apply" "criarusuario-rev-root" "criarteste-rev-root" "remover-rev-root" "alterarsenha-rev-root" "mudardata-rev-root" "alterarlimite-rev-root" "infousers-rev-root" "userbackup-rev-root" "expcleaner-rev-root" "sshmonitor-rev-root")
 for _arq in ${_mdls[@]}; do
 	[[ -e $_dir1/$_arq ]] && rm $_dir1/$_arq >/dev/null 2>&1
-	if [[ "$_arq" == "redlibre-rev-common" ]]; then
-		wget -c -O /etc/RedLibre/redlibre-rev-common "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
-		chmod 644 /etc/RedLibre/redlibre-rev-common 2>/dev/null || true
+	if [[ "$_arq" == "redlibre-rev-common" || "$_arq" == "redlibre-vence-common" ]]; then
+		wget -c -O /etc/RedLibre/$_arq "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
+		chmod 644 /etc/RedLibre/$_arq 2>/dev/null || true
 	else
 		wget -c -P $_dir1 https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq
 		chmod +x $_dir1/$_arq
@@ -88,7 +89,7 @@ crontab -r >/dev/null 2>&1
 	echo "@reboot /etc/autostart"
 	echo "* * * * * /etc/autostart"
 ) | crontab -
-# uexpired: preferir systemd.timer (menos invasivo que PAM); fallback cron si no hay systemd o falla la descarga
+# uexpired: timer cada 2 min (corte por hora); fallback cron */2
 _UE_SVC="https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/systemd/redlibre-uexpired.service"
 _UE_TMR="https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/systemd/redlibre-uexpired.timer"
 if command -v systemctl &>/dev/null; then
@@ -97,12 +98,12 @@ if command -v systemctl &>/dev/null; then
 	if [[ -s /etc/systemd/system/redlibre-uexpired.service ]] && [[ -s /etc/systemd/system/redlibre-uexpired.timer ]]; then
 		systemctl daemon-reload 2>/dev/null || true
 		systemctl enable redlibre-uexpired.timer 2>/dev/null || true
-		systemctl start redlibre-uexpired.timer 2>/dev/null || true
+		systemctl restart redlibre-uexpired.timer 2>/dev/null || systemctl start redlibre-uexpired.timer 2>/dev/null || true
 	else
-		( crontab -l 2>/dev/null ; echo "0 */6 * * * /bin/uexpired" ) | crontab -
+		( crontab -l 2>/dev/null ; echo "*/2 * * * * /bin/uexpired" ) | crontab -
 	fi
 else
-	( crontab -l 2>/dev/null ; echo "0 */6 * * * /bin/uexpired" ) | crontab -
+	( crontab -l 2>/dev/null ; echo "*/2 * * * * /bin/uexpired" ) | crontab -
 fi
 /bin/uexpired 2>/dev/null || true
 echo "$_lvk" | sed -n '1 p' | tr -d '[:space:]' | head -1 >/bin/version && cat /bin/version >/home/redlibre 2>/dev/null || true
