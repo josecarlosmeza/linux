@@ -24,7 +24,7 @@ import socket
 import struct
 import sys
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import TYPE_CHECKING, Optional
 
 import linux_tune
@@ -34,6 +34,14 @@ if TYPE_CHECKING:
     from asyncio import StreamReader, StreamWriter
 
 CLIENT_DISCONNECT_TIMEOUT = 20.0
+# Barrido de conexiones UDP inactivas (una tarea por cliente TCP, no por conid).
+IDLE_SWEEP_INTERVAL = 5.0
+# Compactar el buffer PacketProto cuando el offset supera este umbral.
+_PP_COMPACT_THRESHOLD = 65536
+# Drenar el socket TCP cuando el buffer de escritura supera este tamaño (bytes).
+_TCP_DRAIN_WATERMARK = 65536
+# Límite de frames pendientes hacia el cliente (protege memoria bajo ráfagas).
+_OUT_QUEUE_MAX = 4096
 
 # En main() se fija si uvloop.install() se aplicó antes de asyncio.run
 _uvloop_installed = False
@@ -43,40 +51,66 @@ PACKETPROTO_MAXPAYLOAD = 0xFFFF
 
 
 class PacketProtoReader:
-    """Decodifica flujo TCP en mensajes PacketProto."""
+    """Decodifica flujo TCP en mensajes PacketProto (buffer con offset, sin del O(n) por paquete)."""
 
     def __init__(self) -> None:
         self._buf = bytearray()
+        self._off = 0
 
     def feed(self, data: bytes) -> None:
+        if self._off and (
+            self._off > _PP_COMPACT_THRESHOLD or self._off == len(self._buf)
+        ):
+            del self._buf[: self._off]
+            self._off = 0
         self._buf.extend(data)
 
     def pop_packets(self) -> list[bytes]:
         out: list[bytes] = []
-        while len(self._buf) >= 2:
-            plen = struct.unpack_from("<H", self._buf, 0)[0]
+        buf = self._buf
+        off = self._off
+        while len(buf) - off >= 2:
+            plen = struct.unpack_from("<H", buf, off)[0]
             if plen > PACKETPROTO_MAXPAYLOAD:
                 raise ValueError(f"PacketProto: longitud inválida {plen}")
-            if len(self._buf) < 2 + plen:
+            if len(buf) - off < 2 + plen:
                 break
-            payload = bytes(self._buf[2 : 2 + plen])
-            del self._buf[: 2 + plen]
-            out.append(payload)
+            start = off + 2
+            end = start + plen
+            out.append(bytes(buf[start:end]))
+            off = end
+        self._off = off
+        if off and (off > _PP_COMPACT_THRESHOLD or off == len(buf)):
+            del self._buf[:off]
+            self._off = 0
         return out
 
 
-def _addr_equal(
-    a_ip: str, a_port: int, b_ip: str, b_port: int, *, ipv6: bool
+def _addr_equal_bin(
+    a_bin: bytes, a_port: int, b_bin: bytes, b_port: int
 ) -> bool:
-    """Equivalente a BAddr_Compare == 1 (direcciones iguales)."""
-    if a_port != b_port:
-        return False
+    """Comparación de direcciones ya en forma binaria (sin inet_pton por paquete)."""
+    return a_port == b_port and a_bin == b_bin
+
+
+def _ip_to_bin(host: str, *, ipv6: bool) -> bytes:
     if ipv6:
-        return (
-            socket.inet_pton(socket.AF_INET6, a_ip)
-            == socket.inet_pton(socket.AF_INET6, b_ip)
-        )
-    return socket.inet_aton(a_ip) == socket.inet_aton(b_ip)
+        return socket.inet_pton(socket.AF_INET6, host)
+    return socket.inet_aton(host)
+
+
+def _try_literal_udp(host: str, port: int) -> Optional[tuple[str, int, bool]]:
+    """Si host ya es IP literal, evita getaddrinfo (muy costoso en el hot path)."""
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return host, port, False
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return host, port, True
+    except OSError:
+        return None
 
 
 class UdppyConnection:
@@ -109,32 +143,20 @@ class UdppyConnection:
         self.udppy_mtu = udppy_mtu
         self._linux_tune_sockets = linux_tune_sockets
 
+        self._orig_bin = _ip_to_bin(orig_ip, ipv6=orig_ipv6)
+        # Prefijo de respuesta reutilizable (flags=0 + conid + addr orig).
+        self._reply_prefix = P.pack_udppy_to_client(
+            0, conid, orig_ip, orig_port, b"", ipv6=orig_ipv6
+        )
+
         self._transport: Optional[asyncio.DatagramTransport] = None
         self._protocol: Optional[asyncio.DatagramProtocol] = None
         self._closed = False
         self._last_use = time.monotonic()
-        self._idle_task: Optional[asyncio.Task] = None
+        self._dest = (target_ip, target_port)
 
     def touch(self) -> None:
         self._last_use = time.monotonic()
-
-    def start_idle_watcher(self) -> None:
-        if self._idle_task is not None:
-            return
-
-        async def watch() -> None:
-            try:
-                while not self._closed:
-                    await asyncio.sleep(2.0)
-                    if self._closed:
-                        return
-                    if time.monotonic() - self._last_use > CLIENT_DISCONNECT_TIMEOUT:
-                        await self.close()
-                        return
-            except asyncio.CancelledError:
-                return
-
-        self._idle_task = asyncio.create_task(watch())
 
     async def setup_udp(self) -> None:
         loop = asyncio.get_running_loop()
@@ -150,37 +172,29 @@ class UdppyConnection:
             usock = t.get_extra_info("socket")
             if usock is not None:
                 linux_tune.tune_udp_relay_socket(usock)
-        self.start_idle_watcher()
 
     def send_udp(self, data: bytes) -> None:
         if self._closed or not self._transport:
             return
         self.touch()
-        dest = (self.target_ip, self.target_port)
         trans = self._transport
         sendto = getattr(trans, "sendto", None)
         if sendto is not None:
-            sendto(data, dest)
+            sendto(data, self._dest)
         else:
             trans.send(data)
 
-    async def recv_from_udp(self, data: bytes) -> None:
+    def on_udp_datagram(self, data: bytes) -> None:
+        """Callback síncrono desde el protocolo UDP (sin create_task por paquete)."""
         if self._closed:
             return
         self.touch()
-        await self.client.send_udppy_reply(
-            self,
-            flags=0,
-            payload=data,
-        )
+        self.client.enqueue_udppy_reply(self, data)
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._idle_task:
-            self._idle_task.cancel()
-            self._idle_task = None
         if self._transport:
             self._transport.close()
             self._transport = None
@@ -192,10 +206,11 @@ class _UdppyUdpProtocol(asyncio.DatagramProtocol):
         self._con = con
 
     def datagram_received(self, data: bytes, addr) -> None:
-        asyncio.create_task(self._con.recv_from_udp(data))
+        self._con.on_udp_datagram(data)
 
     def error_received(self, exc: Exception) -> None:
         logging.debug("UDP error conid=%s: %s", self._con.conid, exc)
+
 
 class TcpClientSession:
     """Cliente TCP (sesión tun2socks / protocolo udpgw)."""
@@ -222,10 +237,15 @@ class TcpClientSession:
         self._linux_tune_sockets = linux_tune_sockets
 
         self._pp = PacketProtoReader()
-        self._lock = asyncio.Lock()
         # conid -> conexión (LRU: OrderedDict move_to_end en uso)
         self._by_conid: "OrderedDict[int, UdppyConnection]" = OrderedDict()
         self._closed = False
+
+        self._out_q: deque[bytes] = deque()
+        self._out_wake = asyncio.Event()
+        self._writer_task: Optional[asyncio.Task] = None
+        self._idle_task: Optional[asyncio.Task] = None
+        self._drops = 0
 
     async def _resolve_target(
         self, host: str, port: int
@@ -239,6 +259,8 @@ class TcpClientSession:
             tsock = self.writer.get_extra_info("socket")
             if tsock is not None:
                 linux_tune.tune_tcp_client_for_udppy(tsock)
+        self._writer_task = asyncio.create_task(self._flush_loop())
+        self._idle_task = asyncio.create_task(self._idle_sweeper())
         try:
             while True:
                 data = await self.reader.read(65536)
@@ -257,6 +279,12 @@ class TcpClientSession:
 
     async def close_all(self) -> None:
         self._closed = True
+        self._out_wake.set()
+        for task in (self._writer_task, self._idle_task):
+            if task is not None:
+                task.cancel()
+        self._writer_task = None
+        self._idle_task = None
         for conid in list(self._by_conid.keys()):
             con = self._by_conid.get(conid)
             if con:
@@ -276,30 +304,66 @@ class TcpClientSession:
         logging.debug("Límite de conexiones: cerrando conid=%s", oldest)
         await con.close()
 
-    async def send_udppy_reply(
-        self,
-        con: UdppyConnection,
-        *,
-        flags: int,
-        payload: bytes,
-    ) -> None:
+    async def _idle_sweeper(self) -> None:
+        """Una tarea por cliente TCP: cierra conids idle (antes: 1 tarea por conid)."""
+        try:
+            while not self._closed:
+                await asyncio.sleep(IDLE_SWEEP_INTERVAL)
+                if self._closed:
+                    return
+                now = time.monotonic()
+                stale = [
+                    con
+                    for con in list(self._by_conid.values())
+                    if now - con._last_use > CLIENT_DISCONNECT_TIMEOUT
+                ]
+                for con in stale:
+                    await con.close()
+        except asyncio.CancelledError:
+            return
+
+    def enqueue_udppy_reply(self, con: UdppyConnection, payload: bytes) -> None:
+        """Encola respuesta hacia el cliente (llamado desde el hilo del event loop)."""
         if self._closed:
             return
-        body = P.pack_udppy_to_client(
-            flags,
-            con.conid,
-            con.orig_ip,
-            con.orig_port,
-            payload,
-            ipv6=con.orig_ipv6,
-        )
+        body = con._reply_prefix + payload
         if len(body) > self.udppy_mtu:
             logging.warning("respuesta udppy demasiado grande (protocolo udpgw)")
             return
+        if len(self._out_q) >= _OUT_QUEUE_MAX:
+            self._drops += 1
+            if self._drops == 1 or self._drops % 1000 == 0:
+                logging.warning(
+                    "cola de salida llena; descartando datagramas (%s drops)",
+                    self._drops,
+                )
+            return
         frame = struct.pack("<H", len(body)) + body
-        async with self._lock:
-            self.writer.write(frame)
-            await self.writer.drain()
+        self._out_q.append(frame)
+        self._out_wake.set()
+
+    async def _flush_loop(self) -> None:
+        """Escribe frames en lotes y solo hace drain cuando hace falta."""
+        writer = self.writer
+        try:
+            while not self._closed:
+                await self._out_wake.wait()
+                self._out_wake.clear()
+                written = 0
+                while self._out_q:
+                    frame = self._out_q.popleft()
+                    writer.write(frame)
+                    written += len(frame)
+                    if written >= _TCP_DRAIN_WATERMARK:
+                        await writer.drain()
+                        written = 0
+                if written:
+                    await writer.drain()
+        except asyncio.CancelledError:
+            return
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            logging.debug("escritura TCP cerrada: %s", e)
+            self._closed = True
 
     async def _handle_udppy_payload(self, data: bytes) -> None:
         if len(data) < P.HEADER_SIZE:
@@ -324,6 +388,26 @@ class TcpClientSession:
             return
 
         orig_ip, orig_port = host, port
+        try:
+            orig_bin = _ip_to_bin(orig_ip, ipv6=ipv6)
+        except OSError as e:
+            logging.error("dirección origen inválida %s: %s", orig_ip, e)
+            return
+
+        con = self._by_conid.get(conid)
+        if con and (
+            (flags & P.UDPPY_FLAG_REBIND)
+            or not _addr_equal_bin(
+                con._orig_bin, con.orig_port, orig_bin, orig_port
+            )
+        ):
+            await con.close()
+            con = None
+
+        if con:
+            self._touch_lru(con)
+            con.send_udp(rest)
+            return
 
         target_ip, target_port = orig_ip, orig_port
         if flags & P.UDPPY_FLAG_DNS:
@@ -340,44 +424,29 @@ class TcpClientSession:
             logging.error("resolución destino %s:%s: %s", target_ip, target_port, e)
             return
 
-        con = self._by_conid.get(conid)
-        if con and (
-            (flags & P.UDPPY_FLAG_REBIND)
-            or not _addr_equal(
-                con.orig_ip,
-                con.orig_port,
-                orig_ip,
-                orig_port,
-                ipv6=ipv6,
-            )
-        ):
+        if len(self._by_conid) >= self.max_connections:
+            await self._evict_lru()
+        con = UdppyConnection(
+            client=self,
+            conid=conid,
+            orig_ip=orig_ip,
+            orig_port=orig_port,
+            orig_ipv6=ipv6,
+            target_ip=tip,
+            target_port=tport,
+            target_ipv6=target_v6,
+            udp_mtu=self.udp_mtu,
+            udppy_mtu=self.udppy_mtu,
+            linux_tune_sockets=self._linux_tune_sockets,
+        )
+        self._by_conid[conid] = con
+        try:
+            await con.setup_udp()
+        except OSError as e:
+            logging.error("UDP socket conid=%s: %s", conid, e)
+            self._by_conid.pop(conid, None)
             await con.close()
-            con = None
-
-        if not con:
-            if len(self._by_conid) >= self.max_connections:
-                await self._evict_lru()
-            con = UdppyConnection(
-                client=self,
-                conid=conid,
-                orig_ip=orig_ip,
-                orig_port=orig_port,
-                orig_ipv6=ipv6,
-                target_ip=tip,
-                target_port=tport,
-                target_ipv6=target_v6,
-                udp_mtu=self.udp_mtu,
-                udppy_mtu=self.udppy_mtu,
-                linux_tune_sockets=self._linux_tune_sockets,
-            )
-            self._by_conid[conid] = con
-            try:
-                await con.setup_udp()
-            except OSError as e:
-                logging.error("UDP socket conid=%s: %s", conid, e)
-                self._by_conid.pop(conid, None)
-                await con.close()
-                return
+            return
 
         self._touch_lru(con)
         con.send_udp(rest)
@@ -386,7 +455,10 @@ class TcpClientSession:
 async def _resolve_udp(
     host: str, port: int
 ) -> tuple[str, int, bool]:
-    """Devuelve (ip, puerto, es_ipv6)."""
+    """Devuelve (ip, puerto, es_ipv6). IPs literales no pasan por getaddrinfo."""
+    lit = _try_literal_udp(host, port)
+    if lit is not None:
+        return lit
     loop = asyncio.get_running_loop()
     addrinfos = await loop.getaddrinfo(
         host,
