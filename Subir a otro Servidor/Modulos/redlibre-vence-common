@@ -116,6 +116,7 @@ redlibre_vence_rm() {
 }
 
 # Bloqueo fino: passwd -l + pkill si ya pasó el datetime (solo con archivo vence).
+# Si la cuenta ya está bloqueada, no vuelve a pkill (barato en timers frecuentes).
 redlibre_vence_lock_if_due() {
     local u="$1"
     local raw cut now
@@ -123,6 +124,9 @@ redlibre_vence_lock_if_due() {
     cut=$(redlibre_vence_parse_epoch "$raw") || return 1
     now=$(date +%s)
     [[ "$now" -ge "$cut" ]] || return 1
+    if grep -qE "^${u}:[!*]" /etc/shadow 2>/dev/null; then
+        return 0
+    fi
     passwd -l "$u" >/dev/null 2>&1 || true
     pkill -u "$u" 2>/dev/null || true
     return 0

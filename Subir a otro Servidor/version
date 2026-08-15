@@ -1,2 +1,2 @@
-1.0.0.38
-vence: migración legacy (vence-migrar), infousers con HH:MM, backup admin/rev incluye senha+vence.
+1.0.0.39
+Menú: carga rápida con muchas sesiones (sin uexpired/top/ps-x síncronos); uexpired prioriza vence/ y evita pkill repetido.

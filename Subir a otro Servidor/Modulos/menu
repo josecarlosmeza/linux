@@ -27,6 +27,93 @@ echo -e "\033[1;33m]\033[1;37m -\033[1;32m OK !\033[1;37m"
 tput cnorm
 }
 IP=$(cat /etc/IP)
+
+# --- Stats del panel (rápidos con muchas sesiones SSH) ---
+# Evita: top -bn1, ps -x completo, uexpired síncrono en cada pintura.
+_rl_detect_os() {
+    local system=""
+    if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
+        system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
+        system+=" "
+        system+=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1 | cut -d. -f1)
+    elif [[ "$(grep -c "Ubuntu" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+        system=$(cut -d' ' -f1 /etc/issue.net)
+        system+=" "
+        system+=$(cut -d' ' -f2 /etc/issue.net | awk -F "." '{print $1}')
+    elif [[ "$(grep -c "Debian" /etc/issue.net 2>/dev/null)" = "1" ]]; then
+        system=$(cut -d' ' -f1 /etc/issue.net)
+        system+=" "
+        system+=$(cut -d' ' -f3 /etc/issue.net)
+    else
+        system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || sed 's/ release.*//' /etc/redhat-release 2>/dev/null | head -1)
+    fi
+    printf '%s' "$system"
+}
+
+_rl_count_online() {
+    local n=0 d=0
+    # Solo procesos sshd/sshd-session (no volcado de toda la tabla de procesos)
+    n=$(ps -C sshd -o user=,args= 2>/dev/null | awk '$1!="root" && /[[:space:]]priv/ {c++} END{print c+0}')
+    n=$((n + $(ps -C sshd-session -o user= 2>/dev/null | awk '$1!="root" {c++} END{print c+0}')))
+    if [[ -e /etc/default/dropbear ]]; then
+        d=$(pgrep -c dropbear 2>/dev/null || echo 0)
+        case "$d" in ''|*[!0-9]*) d=0 ;; esac
+        [[ "$d" -gt 0 ]] && d=$((d - 1))
+    fi
+    printf '%s' "$((n + d))"
+}
+
+_rl_mem_cpu() {
+    # Un solo free -m; CPU desde /proc/stat (sin top)
+    local mem_line total used
+    mem_line=$(free -m 2>/dev/null | awk 'NR==2{print $2" "$3}')
+    total=${mem_line%% *}; used=${mem_line##* }
+    if [[ -n "$total" && "$total" -gt 0 ]]; then
+        _ram=$(printf '%-8s' "$(free -h 2>/dev/null | awk 'NR==2{print $2}')")
+        _usor=$(printf '%-8s' "$(awk -v t="$total" -v u="$used" 'BEGIN{printf "%.2f%%", u*100/t}')")
+    else
+        _ram=$(printf '%-8s' "?")
+        _usor=$(printf '%-8s' "?")
+    fi
+    _usop=$(awk '/^cpu /{
+        tot=$2+$3+$4+$5+$6+$7+$8+$9+$10+$11
+        idle=$5
+        if (tot>0) printf "%-6s", int(100-idle*100/tot)"%"
+        else printf "%-6s", "0%"
+    }' /proc/stat 2>/dev/null)
+    [[ -z "$_usop" ]] && _usop=$(printf '%-6s' "?")
+}
+
+_rl_exp_read() {
+    # Lee contador; refresca uexpired en background si Exp falta o tiene >90s
+    local f="/etc/RedLibre/Exp" now age=99999 mtime=0
+    now=$(date +%s)
+    if [[ -f "$f" ]]; then
+        mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+        age=$((now - mtime))
+    fi
+    if [[ -x /bin/uexpired ]] && { [[ ! -f "$f" ]] || [[ "$age" -gt 90 ]]; }; then
+        if [[ ! -e /tmp/redlibre-uexpired.running ]]; then
+            (
+                touch /tmp/redlibre-uexpired.running 2>/dev/null
+                /bin/uexpired >/dev/null 2>&1
+                rm -f /tmp/redlibre-uexpired.running 2>/dev/null
+            ) &
+        fi
+    fi
+    _expuser=$(tr -d '[:space:]' <"$f" 2>/dev/null)
+    case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
+}
+
+_rl_svc_on() {
+    # $1=patron pgrep; evita ps x | grep
+    pgrep -f "$1" >/dev/null 2>&1
+}
+
+# Cache estático (OS / núcleos) — una vez por sesión del menú
+_RL_OS_CACHE="$(_rl_detect_os)"
+_RL_CORE_CACHE=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || grep -c cpu[0-9] /proc/stat 2>/dev/null || echo "?")
+
 if [[ $EUID -ne 0 ]]; then
     _rl_u="$(id -un 2>/dev/null)"
     if [[ -n "$_rl_u" && -d "/etc/RedLibre/revendedores/$_rl_u" ]]; then
@@ -121,7 +208,7 @@ function limit2 () {
    menu
 }
 function limit_ssh () {
-[[ $(ps x | grep "limiter"|grep -v grep |wc -l) = '0' ]] && limit1 || limit2
+[[ $(pgrep -c -f '[l]imiter' 2>/dev/null || echo 0) = '0' ]] && limit1 || limit2
 }
 
 function autoexec () {
@@ -161,40 +248,19 @@ if [[ -f /etc/RedLibre/torrent-lite.enabled ]] || tc qdisc show 2>/dev/null | gr
 else
    stgb=$(echo -e "\033[1;31m[ ]\033[0m")
 fi
-stsbot=$(ps x | grep "bot_plus"|grep -v grep > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+stsbot=$(_rl_svc_on 'bot_plus' && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
 autm=$(grep "menu;" /etc/profile > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
 [[ ! -e /usr/lib/licence ]] && rm -rf /bin > /dev/null 2>&1
-if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
-system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
-system+=$(echo ' ')
-system+=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1 | cut -d. -f1)
-elif [[ "$(grep -c "Ubuntu" /etc/issue.net 2>/dev/null)" = "1" ]]; then
-system=$(cut -d' ' -f1 /etc/issue.net)
-system+=$(echo ' ')
-system+=$(cut -d' ' -f2 /etc/issue.net |awk -F "." '{print $1}')
-elif [[ "$(grep -c "Debian" /etc/issue.net 2>/dev/null)" = "1" ]]; then
-system=$(cut -d' ' -f1 /etc/issue.net)
-system+=$(echo ' ')
-system+=$(cut -d' ' -f3 /etc/issue.net)
-else
-system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
-fi
-_ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
-[[ -x /bin/uexpired ]] && /bin/uexpired >/dev/null 2>&1
-_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
-case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
-_onop="0"
-[[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) _ondrp=$(($_drp - 1)) || _ondrp="0"
-_onli=$(($_ons + $_onop + $_ondrp))
-_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
-_usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
-_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
-_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
+system="$_RL_OS_CACHE"
+_onli=$(_rl_count_online)
+_rl_exp_read
+_rl_mem_cpu
+_core=$(printf '%-2s' "$_RL_CORE_CACHE")
 _system=$(printf '%-14s' "$system")
 _hora=$(printf '%(%H:%M:%S)T' $(date +%s))
 _onlin=$(printf '%-5s' "$_onli")
 _userexp=$(printf '%-5s' "$_expuser")
-_tuser=$(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody | wc -l)
+_tuser=$(awk -F: '$3>=1000 && $1!="nobody" {c++} END{print c+0}' /etc/passwd)
 clear
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
@@ -294,39 +360,25 @@ esac
 }
 while true $x != "ok"
 do
-stsl=$(ps x | grep "limiter"|grep -v grep > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
-if (command -v systemctl &>/dev/null && (systemctl is-active --quiet badvpn-udpgw 2>/dev/null || systemctl is-active --quiet udpgw-py 2>/dev/null)) || (ps x | grep -E "udpvpn|badvpn-udpgw|udpgw_server.py" | grep -v grep >/dev/null); then stsu=$(echo -e "\033[1;32m[*]\033[0m"); else stsu=$(echo -e "\033[1;31m[ ]\033[0m"); fi
-if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
-system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
-system+=$(echo ' ')
-system+=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1 | cut -d. -f1)
-elif [[ "$(grep -c "Ubuntu" /etc/issue.net 2>/dev/null)" = "1" ]]; then
-system=$(cut -d' ' -f1 /etc/issue.net)
-system+=$(echo ' ')
-system+=$(cut -d' ' -f2 /etc/issue.net |awk -F "." '{print $1}')
-elif [[ "$(grep -c "Debian" /etc/issue.net 2>/dev/null)" = "1" ]]; then
-system=$(cut -d' ' -f1 /etc/issue.net)
-system+=$(echo ' ')
-system+=$(cut -d' ' -f3 /etc/issue.net)
+stsl=$(_rl_svc_on '[l]imiter' && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+# BADVPN / UDPGW: systemctl primero; pgrep solo si hace falta
+if command -v systemctl &>/dev/null && (systemctl is-active --quiet badvpn-udpgw 2>/dev/null || systemctl is-active --quiet udpgw-py 2>/dev/null); then
+    stsu=$(echo -e "\033[1;32m[*]\033[0m")
+elif pgrep -f 'badvpn-udpgw' >/dev/null 2>&1 || pgrep -f 'udpvpn' >/dev/null 2>&1 || pgrep -f 'udpgw_server.py' >/dev/null 2>&1; then
+    stsu=$(echo -e "\033[1;32m[*]\033[0m")
 else
-system=$(cut -d' ' -f1 /etc/issue.net 2>/dev/null || cat /etc/redhat-release 2>/dev/null | sed 's/ release.*//')
+    stsu=$(echo -e "\033[1;31m[ ]\033[0m")
 fi
-_ons=$(ps -x | grep sshd | grep -v root | grep priv | wc -l)
-[[ -x /bin/uexpired ]] && /bin/uexpired >/dev/null 2>&1
-_expuser=$(cat /etc/RedLibre/Exp 2>/dev/null | tr -d '[:space:]')
-case "$_expuser" in ''|*[!0-9]*) _expuser="0" ;; esac
-_onop="0"
-[[ -e /etc/default/dropbear ]] && _drp=$(ps aux | grep dropbear | grep -v grep | wc -l) && _ondrp=$(($_drp - 1)) || _ondrp="0"
-_onli=$(($_ons + $_onop + $_ondrp))
-_ram=$(printf '%-8s' "$(free -h | grep -i mem | awk {'print $2'})")
-_usor=$(printf '%-8s' "$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2 }')")
-_usop=$(printf '%-6s' "$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')")
-_core=$(printf '%-2s' "$(grep -c cpu[0-9] /proc/stat)")
+system="$_RL_OS_CACHE"
+_onli=$(_rl_count_online)
+_rl_exp_read
+_rl_mem_cpu
+_core=$(printf '%-2s' "$_RL_CORE_CACHE")
 _system=$(printf '%-14s' "$system")
 _hora=$(printf '%(%H:%M:%S)T' $(date +%s))
 _onlin=$(printf '%-5s' "$_onli")
 _userexp=$(printf '%-5s' "$_expuser")
-_tuser=$(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody | wc -l)
+_tuser=$(awk -F: '$3>=1000 && $1!="nobody" {c++} END{print c+0}' /etc/passwd)
 clear
 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 echo -e "\E[41;1;37m               ⇱ REDLIBRE ⇲                \E[0m"
