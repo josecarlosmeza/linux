@@ -1,2 +1,2 @@
-1.0.0.43
-Fix redlibre-vence-common: CRLF rompía bash (syntax error then); wget sin -c + sed quita CR al actualizar.
+1.0.0.44
+Menú 16: opción «solo PAM» (gracia seleccionable; detiene screen). Reordenado 3–6.
