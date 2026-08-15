@@ -1,7 +1,8 @@
 #!/bin/bash
 #====================================================
 # Submenú — Limitador tiempo real (screen) vs PAM
-# Scripts PAM: Subir a otro Servidor/Limitador/ (limitador-completo.sh, etc.)
+# Scripts PAM: Subir a otro Servidor/Limitador/
+# Config: /etc/RedLibre/limiter.conf
 #====================================================
 [[ $EUID -eq 0 ]] || {
     echo -e "\033[1;31mEjecute como root.\033[0m"
@@ -9,9 +10,10 @@
 }
 
 URL_BASE="https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Limitador"
+CONF_DIR="/etc/RedLibre"
+CONF_FILE="$CONF_DIR/limiter.conf"
 
 _redlibre_rt_running() {
-    # «limiter» en ps también coincide con /bin/droplimiter (subcadena «limiter»); excluir falsos positivos.
     pgrep -x limiter &>/dev/null && return 0
     ps x 2>/dev/null | grep '[l]imiter' | grep -Fv 'droplimiter' | grep -q . && return 0
     return 1
@@ -19,7 +21,10 @@ _redlibre_rt_running() {
 
 _redlibre_rt_status() {
     if _redlibre_rt_running; then
-        printf '%s' "ACTIVO (screen / proceso limiter)"
+        local sec
+        sec=$(grep -E '^SLEEP_TIME=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+        sec="${sec:-10}"
+        printf '%s' "ACTIVO (screen · corte cada ${sec}s)"
     else
         printf '%s' "INACTIVO"
     fi
@@ -31,9 +36,89 @@ _redlibre_pam_active() {
 
 _redlibre_pam_status() {
     if _redlibre_pam_active; then
-        printf '%s' "ACTIVO (pam_exec → check_ssh_limits.sh)"
+        local g px
+        g=$(grep -E '^GRACE_MAX_AGE_SEC=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+        px=$(grep -E '^GRACE_PROXY=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+        g="${g:-?}"; px="${px:-?}"
+        printf '%s' "ACTIVO (gracia ${g}s · proxy=${px})"
     else
         printf '%s' "INACTIVO / no configurado en PAM"
+    fi
+}
+
+_redlibre_conf_show() {
+    if [[ -f "$CONF_FILE" ]]; then
+        echo -e "\033[1;33m  Config ($CONF_FILE):\033[0m"
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            echo -e "\033[1;37m    $line\033[0m"
+        done <"$CONF_FILE"
+    else
+        echo -e "\033[1;33m  Config: \033[1;37maún no creada (se pide al activar)\033[0m"
+    fi
+}
+
+_redlibre_conf_write() {
+    local sleep_t="$1" grace_s="$2" grace_px="$3" grace_buf="${4:-0}"
+    mkdir -p "$CONF_DIR"
+    cat >"$CONF_FILE" <<EOF
+# RedLibre limitadores — generado por gestor-limitador
+SLEEP_TIME=$sleep_t
+GRACE_MAX_AGE_SEC=$grace_s
+GRACE_PROXY=$grace_px
+GRACE_BUFFER=$grace_buf
+EOF
+    chmod 644 "$CONF_FILE"
+}
+
+_redlibre_ask_rt_interval() {
+    local def cur ans
+    cur=$(grep -E '^SLEEP_TIME=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+    def="${cur:-10}"
+    echo -e "\033[1;33mIntervalo del screen antes de revisar/cortar excesos (segundos).\033[0m"
+    echo -e "\033[1;37mEjemplos: 5 (rápido), 10 (default), 30 (más suave).\033[0m"
+    echo -ne "\033[1;32mSegundos [\033[1;37m$def\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$def"
+    if ! [[ "$ans" =~ ^[1-9][0-9]*$ ]] || [[ "$ans" -gt 300 ]]; then
+        echo -e "\033[1;31mValor inválido; se usa $def.\033[0m"
+        ans="$def"
+    fi
+    _ASK_SLEEP="$ans"
+}
+
+_redlibre_ask_pam_grace() {
+    local def_g def_px ans ans2
+    def_g=$(grep -E '^GRACE_MAX_AGE_SEC=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+    def_px=$(grep -E '^GRACE_PROXY=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
+    def_g="${def_g:-300}"
+    def_px="${def_px:-1}"
+
+    echo -e "\033[1;33mGracia PAM por tiempo (segundos).\033[0m"
+    echo -e "\033[1;37mSi la sesión más antigua tiene menos de N segundos, se permite una conexión extra\033[0m"
+    echo -e "\033[1;37m(mitiga fantasmas). \033[1;33m0\033[1;37m = sin gracia de tiempo.\033[0m"
+    echo -ne "\033[1;32mSegundos [\033[1;37m$def_g\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$def_g"
+    if ! [[ "$ans" =~ ^[0-9]+$ ]] || [[ "$ans" -gt 3600 ]]; then
+        echo -e "\033[1;31mValor inválido; se usa $def_g.\033[0m"
+        ans="$def_g"
+    fi
+    _ASK_GRACE="$ans"
+
+    echo -e "\033[1;33m¿Gracia para sesiones vía proxy local (127.0.0.1 / WebSocket)?\033[0m"
+    echo -e "\033[1;37ms = permitir exceso si todas las sesiones son localhost; n = no.\033[0m"
+    echo -ne "\033[1;32m[s/N] (default según config: \033[1;37m$([[ "$def_px" == "1" ]] && echo s || echo N)\033[1;32m): \033[1;37m"
+    read -r ans2
+    ans2=$(echo "${ans2:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ -z "$ans2" ]]; then
+        _ASK_PROXY="$def_px"
+    elif [[ "$ans2" == "s" || "$ans2" == "si" || "$ans2" == "y" || "$ans2" == "yes" ]]; then
+        _ASK_PROXY=1
+    else
+        _ASK_PROXY=0
     fi
 }
 
@@ -69,7 +154,6 @@ _redlibre_pam_remove() {
 _redlibre_rt_stop() {
     screen -S limiter -X quit 2>/dev/null
     screen -wipe 1>/dev/null 2>&1
-    # Si el proceso sigue sin screen (p. ej. relanzado entre cron y autostart), matar el watcher explícito.
     pkill -x limiter 2>/dev/null || true
     pkill -f '[/]bin/limiter' 2>/dev/null || true
     pkill -f '[/]usr/bin/limiter' 2>/dev/null || true
@@ -79,14 +163,18 @@ _redlibre_rt_stop() {
 }
 
 _redlibre_screen_prepare() {
-    # screen exige /run/screen con permisos amplios (en algunas distros 777).
     mkdir -p /run/screen 2>/dev/null || true
     chmod 777 /run/screen 2>/dev/null || true
 }
 
 _redlibre_rt_start() {
     _redlibre_screen_prepare
-    # Arranque explícito del binario (evita PATH ambiguo)
+    # Reiniciar si ya corre (para aplicar nuevo SLEEP_TIME)
+    if _redlibre_rt_running; then
+        pkill -x limiter 2>/dev/null || true
+        screen -S limiter -X quit 2>/dev/null
+        sleep 1
+    fi
     if [[ -x /bin/limiter ]]; then
         screen -dmS limiter /bin/limiter 2>/dev/null
     else
@@ -101,14 +189,8 @@ _redlibre_rt_start() {
         } >/etc/autostart
         chmod +x /etc/autostart 2>/dev/null || true
     fi
-    # Línea robusta: solo el proceso llamado exactamente «limiter» (no droplimiter)
     local _autoline
     _autoline="pgrep -x limiter >/dev/null 2>&1 || screen -dmS limiter /bin/limiter"
-    local _lc
-    _lc=0
-    [[ -f /etc/autostart ]] && _lc=$(grep -Fsc limiter /etc/autostart 2>/dev/null)
-    _lc="${_lc//[^0-9]/}"
-    [[ -z "$_lc" ]] && _lc=0
     sed -i '/limiter/d' /etc/autostart 2>/dev/null || true
     echo "$_autoline" >>/etc/autostart
 }
@@ -120,6 +202,10 @@ _redlibre_is_rhel_like() {
 _redlibre_install_pam_stack() {
     local tmp ec=0
     echo -e "\033[1;32mDescargando e instalando limitador PAM…\033[0m"
+    echo -e "\033[1;37m  GRACE_MAX_AGE_SEC=${GRACE_MAX_AGE_SEC:-300}  GRACE_PROXY=${GRACE_PROXY:-1}\033[0m"
+    export GRACE_MAX_AGE_SEC="${GRACE_MAX_AGE_SEC:-300}"
+    export GRACE_PROXY="${GRACE_PROXY:-1}"
+    export GRACE_BUFFER="${GRACE_BUFFER:-0}"
     if _redlibre_is_rhel_like; then
         tmp=$(mktemp) || return 1
         if ! wget -qO "$tmp" "${URL_BASE}/limitador-completo.sh"; then
@@ -128,7 +214,7 @@ _redlibre_install_pam_stack() {
             return 1
         fi
         chmod +x "$tmp"
-        bash "$tmp" || ec=$?
+        GRACE_MAX_AGE_SEC="$GRACE_MAX_AGE_SEC" GRACE_PROXY="$GRACE_PROXY" GRACE_BUFFER="$GRACE_BUFFER" bash "$tmp" || ec=$?
         rm -f "$tmp"
     else
         tmp=$(mktemp) || return 1
@@ -138,12 +224,82 @@ _redlibre_install_pam_stack() {
             return 1
         fi
         chmod +x "$tmp"
-        bash "$tmp" || ec=$?
+        GRACE_MAX_AGE_SEC="$GRACE_MAX_AGE_SEC" GRACE_PROXY="$GRACE_PROXY" GRACE_BUFFER="$GRACE_BUFFER" bash "$tmp" || ec=$?
         rm -f "$tmp"
         echo -e "\033[1;33mEn Debian/Ubuntu se usó limitador-openssh (PAM sobre /root/usuarios.db).\033[0m"
-        echo -e "\033[1;33mOpcional: en el repo, Limitador/limitador-guardian-sshd para db-guardian.\033[0m"
     fi
     return "$ec"
+}
+
+_redlibre_verify() {
+    clear
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\E[44;1;37m     Verificación de limitadores      \E[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo ""
+    echo -e "\033[1;33m# 1) Proceso screen /bin/limiter\033[0m"
+    echo -e "\033[1;37m\$ pgrep -ax limiter\033[0m"
+    if pgrep -ax limiter 2>/dev/null; then
+        echo -e "\033[1;32m→ ACTIVO\033[0m"
+    else
+        echo -e "\033[1;31m→ no hay proceso «limiter»\033[0m"
+    fi
+    echo ""
+    echo -e "\033[1;33m# 2) Sesión screen\033[0m"
+    echo -e "\033[1;37m\$ screen -ls | grep -i limiter\033[0m"
+    screen -ls 2>/dev/null | grep -i limiter || echo -e "\033[1;31m→ sin sesión screen «limiter»\033[0m"
+    echo ""
+    echo -e "\033[1;33m# 3) Autostart\033[0m"
+    echo -e "\033[1;37m\$ grep limiter /etc/autostart\033[0m"
+    grep limiter /etc/autostart 2>/dev/null || echo -e "\033[1;31m→ sin línea en /etc/autostart\033[0m"
+    echo ""
+    echo -e "\033[1;33m# 4) PAM (sshd)\033[0m"
+    echo -e "\033[1;37m\$ grep pam_exec /etc/pam.d/sshd | grep check_ssh_limits\033[0m"
+    grep pam_exec /etc/pam.d/sshd 2>/dev/null | grep check_ssh_limits || echo -e "\033[1;31m→ PAM del limitador no está en /etc/pam.d/sshd\033[0m"
+    echo ""
+    echo -e "\033[1;33m# 5) Script PAM instalado\033[0m"
+    echo -e "\033[1;37m\$ ls -l /usr/bin/check_ssh_limits.sh\033[0m"
+    ls -l /usr/bin/check_ssh_limits.sh 2>/dev/null || echo -e "\033[1;31m→ falta /usr/bin/check_ssh_limits.sh\033[0m"
+    echo ""
+    echo -e "\033[1;33m# 6) Config RedLibre\033[0m"
+    echo -e "\033[1;37m\$ cat $CONF_FILE\033[0m"
+    if [[ -f "$CONF_FILE" ]]; then
+        cat "$CONF_FILE"
+    else
+        echo -e "\033[1;31m→ no existe $CONF_FILE\033[0m"
+    fi
+    echo ""
+    echo -e "\033[1;33m# 7) Guardián DB\033[0m"
+    echo -e "\033[1;37m\$ systemctl is-active db-guardian.service\033[0m"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active db-guardian.service 2>/dev/null || echo "inactive/missing"
+    else
+        echo "systemd N/A"
+    fi
+    echo ""
+    echo -e "\033[1;33m# 8) Últimas denegaciones PAM\033[0m"
+    echo -e "\033[1;37m\$ journalctl -t ssh_limiter -n 12 --no-pager\033[0m"
+    journalctl -t ssh_limiter -n 12 --no-pager 2>/dev/null || echo "(sin entradas o sin journalctl)"
+    echo ""
+    echo -e "\033[1;33m# 9) Últimos cortes del screen limiter\033[0m"
+    echo -e "\033[1;37m\$ tail -n 12 /var/log/session_kill.log\033[0m"
+    if [[ -f /var/log/session_kill.log ]]; then
+        tail -n 12 /var/log/session_kill.log
+    else
+        echo "(aún no hay /var/log/session_kill.log)"
+    fi
+    echo ""
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\033[1;33mComandos útiles (copiar/pegar en SSH):\033[0m"
+    echo -e "\033[1;37m  pgrep -ax limiter\033[0m"
+    echo -e "\033[1;37m  screen -ls | grep -i limiter\033[0m"
+    echo -e "\033[1;37m  grep pam_exec /etc/pam.d/sshd | grep check_ssh_limits\033[0m"
+    echo -e "\033[1;37m  cat /etc/RedLibre/limiter.conf\033[0m"
+    echo -e "\033[1;37m  journalctl -t ssh_limiter -n 20 --no-pager\033[0m"
+    echo -e "\033[1;37m  tail -n 20 /var/log/session_kill.log\033[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -ne "\033[1;33m[ENTER]\033[0m "
+    read -r
 }
 
 while true; do
@@ -163,16 +319,17 @@ while true; do
     echo ""
     echo -e "\033[1;33m  Guardián de base de datos (\033[1;37mdb-guardian.service\033[1;33m)\033[0m"
     _redlibre_guardian_text
-    echo -e "\033[1;37m  Nota: el guardián no se detiene ni se deshabilita con las opciones 1, 3 ni 4.\033[0m"
+    echo ""
+    _redlibre_conf_show
+    echo -e "\033[1;37m  Nota: el guardián no se detiene con las opciones 1–4.\033[0m"
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo ""
-    echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Activar limitador en \033[1;37mtiempo real\033[1;33m (quita solo PAM del limitador; el guardián sigue)\033[0m"
-    echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Activar \033[1;37mPAM + tiempo real\033[1;33m (recomendado; reinstala PAM estricto y arranca screen)\033[0m"
-    echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Parar \033[1;37mlimitadores de sesión\033[1;33m: screen y PAM (\033[1;37msin tocar el guardián\033[1;33m)\033[0m"
-    echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Reaplicar \033[1;37mPAM estricto\033[1;33m + asegurar tiempo real (igual que 2)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Activar \033[1;37mtiempo real\033[1;33m (elige intervalo de corte; quita PAM)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Activar \033[1;37mPAM + tiempo real\033[1;33m (elige gracia PAM e intervalo screen)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Parar limitadores de sesión (screen + PAM)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Reaplicar PAM + tiempo real (igual que 2)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m \033[1;37mVerificar\033[1;33m limitadores (comandos de diagnóstico)\033[0m"
     echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver al menú principal\033[0m"
-    echo ""
-    echo -e "\033[1;37mNota: solo PAM no corta sesiones ya abiertas; el screen /bin/limiter sí (cada ~10 s).\033[0m"
     echo ""
     echo -ne "\033[1;32mOpción: \033[1;37m"
     read -r _op
@@ -181,34 +338,44 @@ while true; do
         1)
             clear
             echo -e "\033[1;32mActivando limitador en tiempo real…\033[0m"
+            echo ""
+            _redlibre_ask_rt_interval
+            _g=$(grep -E '^GRACE_MAX_AGE_SEC=' "$CONF_FILE" 2>/dev/null | cut -d= -f2)
+            _p=$(grep -E '^GRACE_PROXY=' "$CONF_FILE" 2>/dev/null | cut -d= -f2)
+            _redlibre_conf_write "$_ASK_SLEEP" "${_g:-300}" "${_p:-1}" 0
             _redlibre_pam_remove
             _redlibre_rt_start
             if _redlibre_rt_running; then
-                echo -e "\033[1;32mListo. Screen limiter ACTIVO.\033[0m"
+                echo -e "\033[1;32mListo. Screen ACTIVO — revisa/corta cada ${_ASK_SLEEP}s.\033[0m"
             else
-                echo -e "\033[1;31mAviso: no se detectó proceso limiter. Compruebe: which limiter; screen -ls\033[0m"
+                echo -e "\033[1;31mAviso: no se detectó proceso limiter.\033[0m"
             fi
-            echo -e "\033[1;37mPAM del limitador desmontado en /etc/pam.d/sshd (si estaba).\033[0m"
-            echo -e "\033[1;37mNo se ha reiniciado sshd (no corta sesiones SSH actuales).\033[0m"
+            echo -e "\033[1;37mPAM del limitador desmontado (si estaba).\033[0m"
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r
             ;;
         2|4)
             clear
-            echo -e "\033[1;32mInstalando/reaplicando PAM estricto e iniciando tiempo real…\033[0m"
-            echo -e "\033[1;37m(Se reinstala check_ssh_limits.sh sin gracias de 5 min / proxy 127.0.0.1)\033[0m"
+            echo -e "\033[1;32mPAM + tiempo real — configure parámetros\033[0m"
             echo ""
-            # No parar RT antes: tras PAM lo (re)arrancamos. Si install reinicia sshd, el screen puede caer; por eso start al final.
+            _redlibre_ask_pam_grace
+            echo ""
+            _redlibre_ask_rt_interval
+            _redlibre_conf_write "$_ASK_SLEEP" "$_ASK_GRACE" "$_ASK_PROXY" 0
+            export GRACE_MAX_AGE_SEC="$_ASK_GRACE"
+            export GRACE_PROXY="$_ASK_PROXY"
+            export GRACE_BUFFER=0
+            echo ""
             _redlibre_install_pam_stack
             echo ""
-            echo -e "\033[1;32mIniciando / asegurando limitador en tiempo real (screen)…\033[0m"
+            echo -e "\033[1;32mIniciando screen (intervalo ${_ASK_SLEEP}s)…\033[0m"
             _redlibre_rt_start
             echo ""
             echo -e "\033[1;33mEstado:\033[0m"
             echo -e "  PAM:         $(_redlibre_pam_status)"
             echo -e "  Tiempo real: $(_redlibre_rt_status)"
             if ! _redlibre_rt_running; then
-                echo -e "\033[1;31mEl screen limiter no quedó activo. Revise /bin/limiter y screen.\033[0m"
+                echo -e "\033[1;31mEl screen limiter no quedó activo.\033[0m"
             fi
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r
@@ -218,11 +385,12 @@ while true; do
             echo -e "\033[1;31mDeteniendo limitadores de sesión (screen y PAM)…\033[0m"
             _redlibre_rt_stop
             _redlibre_pam_remove
-            echo -e "\033[1;32mHecho: screen limiter parado y líneas PAM del limitador eliminadas de /etc/pam.d/sshd.\033[0m"
-            echo -e "\033[1;37mNo se ha reiniciado ni recargado sshd.\033[0m"
-            echo -e "\033[1;37mdb-guardian no se ha detenido ni deshabilitado.\033[0m"
+            echo -e "\033[1;32mHecho.\033[0m db-guardian no se tocó."
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r
+            ;;
+        5)
+            _redlibre_verify
             ;;
         0 | 00)
             exit 0

@@ -42,13 +42,19 @@ _dir2='/etc/RedLibre'
 rm -f $_dir2/ShellBot.sh $_dir2/cabecalho $_dir2/open.py $_dir2/proxy.py >/dev/null 2>&1
 _mdls=("addhost" "delhost" "alterarsenha" "criarusuario" "expcleaner" "mudardata" "mudardata-rapido" "remover" "criarteste" "verifbot" "droplimiter" "alterarlimite" "ajuda" "sshmonitor" "badvpn" "userbackup" "gestor-banda" "otimizar" "menu" "speedtest" "banner" "senharoot" "reiniciarservicos" "reiniciarsistema" "attscript" "conexao" "delscript" "detalhes" "botssh" "infousers" "verifatt" "limiter" "gestor-limitador" "uexpired" "vence-migrar" "instsqd" "cabecalho" "bot" "open.py" "proxy.py" "gestor-revendedores" "menu-revendedor" "redlibre-rev-common" "redlibre-vence-common" "revendedor-sshd-lock" "revendedor-caducidad-apply" "criarusuario-rev-root" "criarteste-rev-root" "remover-rev-root" "alterarsenha-rev-root" "mudardata-rev-root" "alterarlimite-rev-root" "infousers-rev-root" "userbackup-rev-root" "expcleaner-rev-root" "sshmonitor-rev-root")
 for _arq in ${_mdls[@]}; do
-	[[ -e $_dir1/$_arq ]] && rm $_dir1/$_arq >/dev/null 2>&1
+	[[ -e $_dir1/$_arq ]] && rm -f $_dir1/$_arq >/dev/null 2>&1
 	if [[ "$_arq" == "redlibre-rev-common" || "$_arq" == "redlibre-vence-common" ]]; then
-		wget -c -O /etc/RedLibre/$_arq "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
-		chmod 644 /etc/RedLibre/$_arq 2>/dev/null || true
+		# Sin -c: evita archivo corrupto al cambiar el tamaño en GitHub
+		rm -f "/etc/RedLibre/$_arq" >/dev/null 2>&1
+		wget -qO "/etc/RedLibre/$_arq" "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
+		# Quitar CRLF (Windows) que rompe bash al hacer source
+		sed -i 's/\r$//' "/etc/RedLibre/$_arq" 2>/dev/null || true
+		chmod 644 "/etc/RedLibre/$_arq" 2>/dev/null || true
 	else
-		wget -c -P $_dir1 https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq
-		chmod +x $_dir1/$_arq
+		rm -f "$_dir1/$_arq" >/dev/null 2>&1
+		wget -qO "$_dir1/$_arq" "https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/Modulos/$_arq"
+		sed -i 's/\r$//' "$_dir1/$_arq" 2>/dev/null || true
+		chmod +x "$_dir1/$_arq"
 	fi
 done
 [[ -x /bin/revendedor-sshd-lock ]] && /bin/revendedor-sshd-lock 2>/dev/null || true

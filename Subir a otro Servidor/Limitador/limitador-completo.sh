@@ -19,9 +19,14 @@ DB_LIMITER="$LIMITADOR_DIR/usuarios-limitador.db"
 DB_BACKUP="$LIMITADOR_DIR/usuarios.backup"
 
 LIMITER_PATH="/usr/bin/check_ssh_limits.sh"
-# Límite estricto: sin sesiones extra ni gracias por tiempo/proxy (el screen /bin/limiter corta excesos).
-GRACE_BUFFER=0
-GRACE_MAX_AGE_SEC=0
+# Parámetros (pueden venir del entorno vía gestor-limitador)
+GRACE_BUFFER="${GRACE_BUFFER:-0}"
+GRACE_MAX_AGE_SEC="${GRACE_MAX_AGE_SEC:-300}"
+GRACE_PROXY="${GRACE_PROXY:-1}"
+# Normalizar enteros
+case "$GRACE_BUFFER" in ''|*[!0-9]*) GRACE_BUFFER=0 ;; esac
+case "$GRACE_MAX_AGE_SEC" in ''|*[!0-9]*) GRACE_MAX_AGE_SEC=300 ;; esac
+case "$GRACE_PROXY" in 0|1) ;; *) GRACE_PROXY=1 ;; esac
 SCR_PATH="/usr/local/bin/db-guardian.sh"
 GHOST_CLEANUP_PATH="/usr/local/bin/sshd-ghost-cleanup.sh"
 SVC_PATH="/etc/systemd/system/db-guardian.service"
@@ -107,11 +112,16 @@ echo "✅ Servicio db-guardian activado y en ejecución."
 
 # --- 4. CREAR SCRIPT LIMITADOR (PAM usa DB_LIMITER) ---
 echo "--- 4. Creando Script Limitador en $LIMITER_PATH ---"
+echo "    GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC  GRACE_PROXY=$GRACE_PROXY  GRACE_BUFFER=$GRACE_BUFFER"
 tee "$LIMITER_PATH" > /dev/null <<LIMITER_EOF
 #!/bin/bash
-# Limitador SSH por PAM — lee \$DB_SOURCE (límite estricto)
+# Limitador SSH por PAM — lee \$DB_SOURCE
+# Generado con GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC GRACE_PROXY=$GRACE_PROXY GRACE_BUFFER=$GRACE_BUFFER
 DB_SOURCE="$DB_LIMITER"
 USER="\$PAM_USER"
+GRACE_BUFFER=$GRACE_BUFFER
+GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC
+GRACE_PROXY=$GRACE_PROXY
 
 # 1. EXCEPCIÓN ROOT
 if [ "\$USER" = "root" ] || [ -z "\$USER" ]; then
@@ -131,14 +141,49 @@ if [ -z "\$MAX_ALLOWED" ]; then
 fi
 MAX_ALLOWED=\${MAX_ALLOWED:-3}
 
-# 4. SESIONES: comm sshd / sshd-session (alineado con panel e infousers)
+# 4. SESIONES: comm sshd / sshd-session
 CURRENT_SESSIONS=\$(ps -u "\$USER" -o comm= 2>/dev/null | grep -cE '^(sshd|sshd-session)\$' || true)
 CURRENT_SESSIONS=\${CURRENT_SESSIONS:-0}
 
-# 5. BLOQUEO estricto (sin GRACE tiempo/proxy)
-# (-gt: al ejecutarse PAM la sesión nueva suele aparecer ya en ps)
-if [ "\$CURRENT_SESSIONS" -gt "\$MAX_ALLOWED" ]; then
-    logger -t ssh_limiter "DENIED: \$USER límite=\$MAX_ALLOWED activas=\$CURRENT_SESSIONS"
+ME=\$PPID
+_ssh_pids_for_user() {
+  ps -u "\$USER" -o pid=,comm= 2>/dev/null | awk '\$2 ~ /sshd/ {print \$1}'
+}
+
+# 5. BLOQUEO: denegar si supera límite + buffer
+DENY_AT=\$((MAX_ALLOWED + GRACE_BUFFER))
+if [ "\$CURRENT_SESSIONS" -gt "\$DENY_AT" ]; then
+    # Gracia tiempo: si la sesión más antigua tiene < GRACE_MAX_AGE_SEC, permitir
+    if [ "\$GRACE_MAX_AGE_SEC" -gt 0 ] && [ "\$CURRENT_SESSIONS" -ge 1 ]; then
+      max_age=0
+      for pid in \$(_ssh_pids_for_user); do
+        [ "\$pid" = "\$ME" ] && continue
+        ss -tnp state established 2>/dev/null | grep -qE "pid=\${pid}[,)]" || continue
+        age=\$(ps -p "\$pid" -o etimes= 2>/dev/null)
+        [ -n "\$age" ] && [ "\$age" -gt "\$max_age" ] && max_age=\$age
+      done
+      if [ "\$max_age" -gt 0 ] && [ "\$max_age" -lt "\$GRACE_MAX_AGE_SEC" ]; then
+        logger -t ssh_limiter "GRACE time: \$USER sesión max \${max_age}s < \$GRACE_MAX_AGE_SEC"
+        exit 0
+      fi
+    fi
+    # Gracia proxy: todas las sesiones desde 127.0.0.1
+    if [ "\$GRACE_PROXY" = "1" ] && command -v ss &>/dev/null; then
+      all_proxy=1
+      any_line=0
+      for pid in \$(_ssh_pids_for_user); do
+        [ "\$pid" = "\$ME" ] && continue
+        line=\$(ss -tnp state established 2>/dev/null | grep -E "pid=\${pid}[,)]" | head -1)
+        [ -z "\$line" ] && continue
+        any_line=1
+        echo "\$line" | grep -q "127\.0\.0\.1" || { all_proxy=0; break; }
+      done
+      if [ "\$all_proxy" = "1" ] && [ "\$any_line" = "1" ]; then
+        logger -t ssh_limiter "GRACE proxy: \$USER (sesiones desde 127.0.0.1)"
+        exit 0
+      fi
+    fi
+    logger -t ssh_limiter "DENIED: \$USER límite=\$MAX_ALLOWED buffer=\$GRACE_BUFFER activas=\$CURRENT_SESSIONS"
     exit 1
 fi
 
@@ -146,7 +191,7 @@ exit 0
 LIMITER_EOF
 
 chmod +x "$LIMITER_PATH"
-echo "✅ Script limitador instalado (lee de $DB_LIMITER, protege root, límite estricto)."
+echo "✅ Script limitador instalado (lee de $DB_LIMITER; gracia ${GRACE_MAX_AGE_SEC}s, proxy=$GRACE_PROXY)."
 
 # --- 4b. LIMPIADOR DE SESIONES FANTASMA (sshd: sin TCP ESTABLISHED) ---
 echo "--- 4b. Limpiador de sesiones fantasma ---"
@@ -230,4 +275,5 @@ echo "  3. Revisar: journalctl -t ssh_limiter -f"
 echo ""
 echo "SELinux: si hay denegaciones, revisa 'ausearch -m avc -ts recent'."
 echo ""
-echo "Límite estricto (sin GRACE tiempo/proxy). Recomendado: menú opc. 16 → PAM + tiempo real."
+echo "Gracias PAM instaladas: GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC  GRACE_PROXY=$GRACE_PROXY"
+echo "Recomendado: menú opc. 16 → PAM + tiempo real (screen corta excesos en vivo)."

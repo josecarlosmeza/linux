@@ -7,6 +7,14 @@ LIMITER_PATH="/usr/bin/check_ssh_limits.sh"
 DB_SOURCE="/root/usuarios.db"
 PAM_SSHD_FILE="/etc/pam.d/sshd"
 
+# Parámetros (pueden venir del entorno vía gestor-limitador)
+GRACE_BUFFER="${GRACE_BUFFER:-0}"
+GRACE_MAX_AGE_SEC="${GRACE_MAX_AGE_SEC:-300}"
+GRACE_PROXY="${GRACE_PROXY:-1}"
+case "$GRACE_BUFFER" in ''|*[!0-9]*) GRACE_BUFFER=0 ;; esac
+case "$GRACE_MAX_AGE_SEC" in ''|*[!0-9]*) GRACE_MAX_AGE_SEC=300 ;; esac
+case "$GRACE_PROXY" in 0|1) ;; *) GRACE_PROXY=1 ;; esac
+
 # --- 1. CREAR ARCHIVO DE LÍMITES (Si no existe) ---
 echo "--- 1. Configurando base de datos de usuarios: $DB_SOURCE ---"
 if [ ! -f "$DB_SOURCE" ]; then
@@ -23,41 +31,78 @@ chmod 644 "$DB_SOURCE"
 
 # --- 2. CREAR SCRIPT LIMITADOR CON EXCEPCIÓN PARA ROOT ---
 echo "--- 2. Creando Script Limitador en $LIMITER_PATH ---"
-sudo tee "$LIMITER_PATH" > /dev/null <<'EOF_LIMITER'
+echo "    GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC  GRACE_PROXY=$GRACE_PROXY  GRACE_BUFFER=$GRACE_BUFFER"
+sudo tee "$LIMITER_PATH" > /dev/null <<LIMITER_EOF
 #!/bin/bash
 # Script de límite ejecutado por PAM
+# Generado con GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC GRACE_PROXY=$GRACE_PROXY GRACE_BUFFER=$GRACE_BUFFER
 DB_SOURCE="/root/usuarios.db"
-USER="$PAM_USER"
+USER="\$PAM_USER"
+GRACE_BUFFER=$GRACE_BUFFER
+GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC
+GRACE_PROXY=$GRACE_PROXY
 
 # 1. EXCEPCIÓN TOTAL PARA ROOT (Seguridad ante bloqueos)
-if [ "$USER" == "root" ] || [ -z "$USER" ]; then
+if [ "\$USER" = "root" ] || [ -z "\$USER" ]; then
     exit 0
 fi
 
 # 2. OBTENER LÍMITE DEL ARCHIVO
-# Intenta buscar el usuario, si no, busca el global (*), si no, usa 3 por defecto.
-MAX_ALLOWED=$(grep "^$USER " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
-if [ -z "$MAX_ALLOWED" ]; then
-    MAX_ALLOWED=$(grep "^\* " "$DB_SOURCE" 2>/dev/null | awk '{print $2}')
+MAX_ALLOWED=\$(grep "^\$USER " "\$DB_SOURCE" 2>/dev/null | awk '{print \$2}')
+if [ -z "\$MAX_ALLOWED" ]; then
+    MAX_ALLOWED=\$(grep "^\* " "\$DB_SOURCE" 2>/dev/null | awk '{print \$2}')
 fi
-MAX_ALLOWED=${MAX_ALLOWED:-3}
+MAX_ALLOWED=\${MAX_ALLOWED:-3}
 
 # 3. CONTAR SESIONES SSH del usuario (comm sshd / sshd-session)
-CURRENT_SESSIONS=$(ps -u "$USER" -o comm= 2>/dev/null | grep -cE '^(sshd|sshd-session)$' || true)
-CURRENT_SESSIONS=${CURRENT_SESSIONS:-0}
+CURRENT_SESSIONS=\$(ps -u "\$USER" -o comm= 2>/dev/null | grep -cE '^(sshd|sshd-session)\$' || true)
+CURRENT_SESSIONS=\${CURRENT_SESSIONS:-0}
 
-# 4. APLICAR LÓGICA DE BLOQUEO (-gt: la sesión que entra suele ya figurar en ps al ejecutarse PAM)
-if [ "$CURRENT_SESSIONS" -gt "$MAX_ALLOWED" ]; then
-    logger -t ssh_limiter "DENIED: $USER excedió el límite de $MAX_ALLOWED (Activas: $CURRENT_SESSIONS)"
+ME=\$PPID
+_ssh_pids_for_user() {
+  ps -u "\$USER" -o pid=,comm= 2>/dev/null | awk '\$2 ~ /sshd/ {print \$1}'
+}
+
+# 4. BLOQUEO: denegar si supera límite + buffer
+DENY_AT=\$((MAX_ALLOWED + GRACE_BUFFER))
+if [ "\$CURRENT_SESSIONS" -gt "\$DENY_AT" ]; then
+    if [ "\$GRACE_MAX_AGE_SEC" -gt 0 ] && [ "\$CURRENT_SESSIONS" -ge 1 ]; then
+      max_age=0
+      for pid in \$(_ssh_pids_for_user); do
+        [ "\$pid" = "\$ME" ] && continue
+        ss -tnp state established 2>/dev/null | grep -qE "pid=\${pid}[,)]" || continue
+        age=\$(ps -p "\$pid" -o etimes= 2>/dev/null)
+        [ -n "\$age" ] && [ "\$age" -gt "\$max_age" ] && max_age=\$age
+      done
+      if [ "\$max_age" -gt 0 ] && [ "\$max_age" -lt "\$GRACE_MAX_AGE_SEC" ]; then
+        logger -t ssh_limiter "GRACE time: \$USER sesión max \${max_age}s < \$GRACE_MAX_AGE_SEC"
+        exit 0
+      fi
+    fi
+    if [ "\$GRACE_PROXY" = "1" ] && command -v ss &>/dev/null; then
+      all_proxy=1
+      any_line=0
+      for pid in \$(_ssh_pids_for_user); do
+        [ "\$pid" = "\$ME" ] && continue
+        line=\$(ss -tnp state established 2>/dev/null | grep -E "pid=\${pid}[,)]" | head -1)
+        [ -z "\$line" ] && continue
+        any_line=1
+        echo "\$line" | grep -q "127\.0\.0\.1" || { all_proxy=0; break; }
+      done
+      if [ "\$all_proxy" = "1" ] && [ "\$any_line" = "1" ]; then
+        logger -t ssh_limiter "GRACE proxy: \$USER (sesiones desde 127.0.0.1)"
+        exit 0
+      fi
+    fi
+    logger -t ssh_limiter "DENIED: \$USER excedió el límite de \$MAX_ALLOWED (Activas: \$CURRENT_SESSIONS)"
     exit 1
 fi
 
-# 5. SIEMPRE PERMITIR POR DEFECTO SI NADA DE LO ANTERIOR FALLÓ
 exit 0
-EOF_LIMITER
+LIMITER_EOF
 
 sudo chmod +x "$LIMITER_PATH"
-echo "✅ Script limitador instalado con protección para root."
+echo "✅ Script limitador instalado (gracia ${GRACE_MAX_AGE_SEC}s, proxy=$GRACE_PROXY)."
 
 # --- 3. CONFIGURAR PAM ---
 echo "--- 3. Configurando PAM ($PAM_SSHD_FILE) ---"
@@ -98,4 +143,5 @@ else
 fi
 echo "✅ Instalación del script y PAM finalizada."
 echo ""
+echo "Gracias PAM: GRACE_MAX_AGE_SEC=$GRACE_MAX_AGE_SEC  GRACE_PROXY=$GRACE_PROXY"
 echo "⚠️  NOTA: El usuario 'root' ahora tiene acceso total garantizado."

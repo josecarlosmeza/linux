@@ -1,7 +1,7 @@
 #====================================================
-# RedLibre — vencimiento por fecha+hora (misma hora de creación/modificación)
-# Archivo: /etc/RedLibre/vence/<usuario>  →  "YYYY-MM-DD HH:MM:SS"
-# chage -E se fija al día SIGUIENTE al corte (respaldo PAM; el corte fino lo hace uexpired).
+# RedLibre - vencimiento por fecha+hora (misma hora de creacion/modificacion)
+# Archivo: /etc/RedLibre/vence/<usuario>  ->  "YYYY-MM-DD HH:MM:SS"
+# chage -E se fija al dia SIGUIENTE al corte (respaldo PAM; el corte fino lo hace uexpired).
 # Timer systemd (~2 min): bloquea con passwd -l + pkill al alcanzar el datetime.
 #====================================================
 
@@ -21,7 +21,7 @@ redlibre_vence_parse_epoch() {
     date +%s --date="$raw" 2>/dev/null || date +%s -d "$raw" 2>/dev/null
 }
 
-# Lee datetime de corte (stdout) o vacío.
+# Lee datetime de corte (stdout) o vacio.
 redlibre_vence_get() {
     local u="$1"
     local f="$VENCE_DIR/$u"
@@ -56,7 +56,7 @@ redlibre_vence_is_expired() {
     [[ "$now" -ge "$cut" ]]
 }
 
-# Día de chage = día siguiente al corte (evita bloqueo PAM a medianoche del día de corte).
+# Dia de chage = dia siguiente al corte (evita bloqueo PAM a medianoche del dia de corte).
 redlibre_vence_chage_day_after() {
     local cutoff="$1"
     local ymd
@@ -64,7 +64,7 @@ redlibre_vence_chage_day_after() {
     date "+%Y-%m-%d" --date="$ymd + 1 day" 2>/dev/null || date "+%Y-%m-%d" -d "$ymd + 1 day" 2>/dev/null
 }
 
-# Escribe vence + chage -E (día+1) + desbloquea cuenta si estaba locked.
+# Escribe vence + chage -E (dia+1) + desbloquea cuenta si estaba locked.
 # $1=usuario  $2=cutoff "YYYY-MM-DD HH:MM:SS"
 redlibre_vence_apply() {
     local u="$1"
@@ -81,8 +81,8 @@ redlibre_vence_apply() {
     return 0
 }
 
-# Corte = ahora + N días (misma hora).
-# stdout: línea "cutoff|gui_fecha|gui_hora"  (gui_fecha=DD/MM/YYYY)
+# Corte = ahora + N dias (misma hora).
+# stdout: linea "cutoff|gui_fecha|gui_hora"  (gui_fecha=DD/MM/YYYY)
 redlibre_vence_set_from_days() {
     local u="$1"
     local days="$2"
@@ -95,7 +95,7 @@ redlibre_vence_set_from_days() {
     printf '%s|%s|%s\n' "$cutoff" "$gui_f" "$gui_h"
 }
 
-# Corte = fecha YYYY-MM-DD + hora actual de modificación.
+# Corte = fecha YYYY-MM-DD + hora actual de modificacion.
 redlibre_vence_set_from_ymd() {
     local u="$1"
     local ymd="$2"
@@ -115,8 +115,8 @@ redlibre_vence_rm() {
     rm -f "$VENCE_DIR/$u" 2>/dev/null || true
 }
 
-# Bloqueo fino: passwd -l + pkill si ya pasó el datetime (solo con archivo vence).
-# Si la cuenta ya está bloqueada, no vuelve a pkill (barato en timers frecuentes).
+# Bloqueo fino: passwd -l + pkill si ya paso el datetime (solo con archivo vence).
+# Si la cuenta ya esta bloqueada, no vuelve a pkill (barato en timers frecuentes).
 redlibre_vence_lock_if_due() {
     local u="$1"
     local raw cut now
@@ -132,10 +132,10 @@ redlibre_vence_lock_if_due() {
     return 0
 }
 
-# Texto UI: hora de corte aproximada (± cadencia del timer).
+# Texto UI: hora de corte aproximada (+/- cadencia del timer).
 redlibre_vence_msg_hora() {
     local hhmm="$1"
-    printf 'Hora de corte (aprox): %s (±2 min)\n' "${hhmm:-—}"
+    printf 'Hora de corte (aprox): %s (+/-2 min)\n' "${hhmm:--}"
 }
 
 # Info para listados: "etiqueta|epoch|modo"  (modo=vence|chage|never)
@@ -159,12 +159,14 @@ redlibre_vence_display_info() {
     printf '%s|%s|chage\n' "${fecha:-$exp_line}" "${epoch:-0}"
 }
 
-# Migra cuentas sin archivo vence: corte a medianoche del día de chage (comportamiento legacy).
-# No pisa archivos vence existentes. Ajusta chage al día siguiente (respaldo PAM).
-# stdout: número migrados. Return 0 siempre si puede correr.
+# Migra cuentas sin archivo vence: corte a medianoche del dia de chage (comportamiento legacy).
+# No pisa archivos vence existentes. Ajusta chage al dia siguiente (respaldo PAM).
+# stdout: numero migrados.
 redlibre_vence_migrate_legacy() {
     local u exp_line ymd cutoff n=0
+    local _ulist
     redlibre_vence_ensure_dir
+    _ulist=$(awk -F: '$3 >= 1000 {print $1}' /etc/passwd 2>/dev/null | grep -v '^nobody$' || true)
     while IFS= read -r u; do
         [[ -z "$u" || "$u" == "root" || "$u" == "nobody" ]] && continue
         [[ -f "$VENCE_DIR/$u" ]] && continue
@@ -172,10 +174,10 @@ redlibre_vence_migrate_legacy() {
         [[ -z "$exp_line" || "$exp_line" == "never" ]] && continue
         ymd=$(date "+%Y-%m-%d" --date="$exp_line" 2>/dev/null || date "+%Y-%m-%d" -d "$exp_line" 2>/dev/null) || continue
         [[ "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
-        cutoff="$ymd 00:00:00"
-        if redlibre_vence_apply "$u" "$cutoff" 2>/dev/null; then
+        cutoff="${ymd} 00:00:00"
+        if redlibre_vence_apply "$u" "$cutoff" >/dev/null 2>&1; then
             n=$((n + 1))
         fi
-    done < <(awk -F: '$3>=1000 {print $1}' /etc/passwd | grep -v nobody)
+    done <<<"$_ulist"
     printf '%s\n' "$n"
 }
