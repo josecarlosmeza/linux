@@ -185,10 +185,10 @@ function limit1 () {
    echo ""
    fun_bar 'screen -dmS limiter limiter' 'sleep 3'
    [[ $(grep -wc "limiter" /etc/autostart) = '0' ]] && {
-       echo -e "ps x | grep 'limiter' | grep -v 'grep' && echo 'ON' || screen -dmS limiter limiter" >> /etc/autostart
+       echo -e "pgrep -x limiter >/dev/null 2>&1 || screen -dmS limiter /bin/limiter" >> /etc/autostart
    } || {
        sed -i '/limiter/d' /etc/autostart
-	   echo -e "ps x | grep 'limiter' | grep -v 'grep' && echo 'ON' || screen -dmS limiter limiter" >> /etc/autostart
+	   echo -e "pgrep -x limiter >/dev/null 2>&1 || screen -dmS limiter /bin/limiter" >> /etc/autostart
    }
    echo -e "\n\033[1;32m  Limitador activo.\033[0m"
    sleep 3
@@ -365,7 +365,7 @@ esac
 }
 while true $x != "ok"
 do
-stsl=$(_rl_svc_on '[l]imiter' && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
+stsl=$(pgrep -x limiter >/dev/null 2>&1 && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
 # BADVPN / UDPGW: systemctl primero; pgrep solo si hace falta
 if command -v systemctl &>/dev/null && (systemctl is-active --quiet badvpn-udpgw 2>/dev/null || systemctl is-active --quiet udpgw-py 2>/dev/null); then
     stsu=$(echo -e "\033[1;32m[*]\033[0m")

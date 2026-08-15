@@ -42,8 +42,8 @@ if [ -z "$MAX_ALLOWED" ]; then
 fi
 MAX_ALLOWED=${MAX_ALLOWED:-3}
 
-# 3. CONTAR SESIONES SSH del usuario (alineado con infousers: ps; incluye sshd-session en distros nuevas)
-CURRENT_SESSIONS=$(ps -u "$USER" 2>/dev/null | grep -c '[s]shd' || true)
+# 3. CONTAR SESIONES SSH del usuario (comm sshd / sshd-session)
+CURRENT_SESSIONS=$(ps -u "$USER" -o comm= 2>/dev/null | grep -cE '^(sshd|sshd-session)$' || true)
 CURRENT_SESSIONS=${CURRENT_SESSIONS:-0}
 
 # 4. APLICAR LÓGICA DE BLOQUEO (-gt: la sesión que entra suele ya figurar en ps al ejecutarse PAM)

@@ -1,11 +1,8 @@
 #!/bin/bash
-# Script: dropbear_watcher.sh (CORREGIDO)
-# Propósito: Monitorear continuamente sesiones Dropbear/SSHD y matar (KILL) aquellas que excedan el límite.
-# Optimizado para bajo consumo de recursos (lee solo las últimas 5000 líneas y se ejecuta cada 10s).
+# Watcher: corta sesiones SSH/Dropbear que excedan el límite en /root/usuarios.db
+# Conteo principal por procesos (sshd / sshd-session); el log solo ayuda a elegir PID a matar.
 
-# --- CONFIGURACIÓN ---
 database="/root/usuarios.db"
-# Debian/Ubuntu: auth.log; RHEL/Alma: secure (igual que sshmonitor-sshd).
 if [[ -f /var/log/secure ]]; then
     AUTH_LOG_FILE="/var/log/secure"
 elif [[ -f /var/log/auth.log ]]; then
@@ -15,81 +12,70 @@ else
 fi
 LOG_KILL_FILE="/var/log/session_kill.log"
 
-LOG_TAIL_LINES=5000 # Solo busca en las últimas 5000 líneas del log.
-SLEEP_TIME=10       # Esperar 10 segundos entre ciclos.
-# --- FIN CONFIGURACIÓN ---
+LOG_TAIL_LINES=5000
+SLEEP_TIME=10
 
-# PIDs en auth: dropbear[123], sshd[123], sshd-session[123] (OpenSSH reciente).
 _redlibre_limiter_extract_pids() {
     grep -oE 'dropbear\[[0-9]+\]|sshd-session\[[0-9]+\]|sshd\[[0-9]+\]' 2>/dev/null | sed 's/.*\[\([0-9]*\)\]/\1/' | sort -u
 }
 
+# Conteo fiable: procesos del usuario (misma base que PAM / infousers)
 get_active_session_count() {
-    # CORRECCIÓN: Usar la variable de posición directamente sin barras invertidas o asignación problemática
-    local target_user="$1" 
-    local active_count=0
-    
-    # 1. OPTIMIZACIÓN: Solo buscar en las últimas LOG_TAIL_LINES del log
-    if [[ ! -r "$AUTH_LOG_FILE" ]]; then
-        echo "0"
-        return
-    fi
-    SUCCESS_LINES=$(tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null | grep -E 'Accepted password|Password auth succeeded|session opened' | grep -w "$target_user")
-
-    if [[ -n "$SUCCESS_LINES" ]]; then
-        # 2. Extracción de PIDs (dropbear / sshd / sshd-session)
-        REGISTERED_PIDS=$(echo "$SUCCESS_LINES" | _redlibre_limiter_extract_pids)
-
-        # 3. Contar cuántos PIDs registrados siguen activos
-        for pid in $REGISTERED_PIDS; do
-            if ps -p "$pid" > /dev/null 2>&1; then
-                active_count=$((active_count + 1))
-            fi
-        done
-    fi
-    echo "$active_count"
+    local target_user="$1"
+    local c=0
+    c=$(ps -u "$target_user" -o comm= 2>/dev/null | grep -cE '^(sshd|sshd-session|dropbear)$' || true)
+    echo "${c:-0}"
 }
 
-# --- BUCLE DE MONITOREO PRINCIPAL ---
+# PIDs SSH/Dropbear del usuario (más nuevo primero)
+_redlibre_user_ssh_pids() {
+    local target_user="$1"
+    ps -u "$target_user" -o pid=,comm=,etime= 2>/dev/null |
+        awk '$2 ~ /^(sshd|sshd-session|dropbear)$/ {print $1}' |
+        while read -r pid; do
+            [[ -n "$pid" ]] && ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
+        done | sort -nr
+}
+
 while true; do
-    while IFS=' ' read -r user s2ssh _ 
-    do  
+    [[ -f "$database" ]] || { sleep "$SLEEP_TIME"; continue; }
+
+    while IFS=' ' read -r user s2ssh _; do
         user=$(echo "$user" | xargs)
         s2ssh=$(echo "$s2ssh" | xargs)
-        
-        if [[ -z "$s2ssh" || "$s2ssh" -eq 0 ]]; then
-            continue
-        fi
 
-        # PASAR LA VARIABLE DE USUARIO LIMPIA A LA FUNCIÓN
+        # Saltar comentarios / cabeceras
+        [[ -z "$user" || "$user" == \#* || "$user" == "*" ]] && continue
+        [[ -z "$s2ssh" || ! "$s2ssh" =~ ^[0-9]+$ || "$s2ssh" -eq 0 ]] && continue
+        id "$user" &>/dev/null || continue
+
         CURRENT_SESSIONS=$(get_active_session_count "$user")
-        
-        # LÓGICA DE TERMINACIÓN (Si el conteo excede el límite)
+
         if [[ "$CURRENT_SESSIONS" -gt "$s2ssh" ]]; then
-            
-            # Obtener TODOS los PIDs activos (ordenados de más nuevo a más viejo) para matar la sesión más reciente
-            ALL_ACTIVE_PIDS=$(
-                tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null |
-                grep -E 'Accepted password|Password auth succeeded|session opened' |
-                grep -w "$user" |
-                _redlibre_limiter_extract_pids |
-                sort -nr |
-                while read -r pid; do
-                    ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
-                done
-            )
-            
-            PID_TO_KILL=$(echo "$ALL_ACTIVE_PIDS" | head -1)
+            # Preferir PID vivo del usuario; fallback al log de auth
+            PID_TO_KILL=$(_redlibre_user_ssh_pids "$user" | head -1)
+            if [[ -z "$PID_TO_KILL" && -r "$AUTH_LOG_FILE" ]]; then
+                PID_TO_KILL=$(
+                    tail -n "$LOG_TAIL_LINES" "$AUTH_LOG_FILE" 2>/dev/null |
+                        grep -E 'Accepted password|Password auth succeeded|session opened' |
+                        grep -w "$user" |
+                        _redlibre_limiter_extract_pids |
+                        sort -nr |
+                        while read -r pid; do
+                            ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
+                        done | head -1
+                )
+            fi
 
             if [[ -n "$PID_TO_KILL" ]]; then
                 kill "$PID_TO_KILL" 2>/dev/null
-                echo "$(date): KILLED PID $PID_TO_KILL for user $user. Limit exceeded ($CURRENT_SESSIONS/$s2ssh)" >> "$LOG_KILL_FILE"
+                echo "$(date): KILLED PID $PID_TO_KILL for user $user. Limit exceeded ($CURRENT_SESSIONS/$s2ssh)" >>"$LOG_KILL_FILE"
             fi
         fi
-        
-    done < "$database"
 
-    # --- Tope global de sesiones SSH para todos los usuarios de un revendedor ---
+    done <"$database"
+
+    # Tope global de sesiones por revendedor
     shopt -s nullglob
     for _rev_path in /etc/RedLibre/revendedores/*; do
         [[ -d "$_rev_path/usuarios" ]] || continue
@@ -108,20 +94,14 @@ while true; do
             _tot=$((_tot + _c))
         done
         if [[ "$_tot" -gt "$_max_tot" ]]; then
-            ALL_ACTIVE_PIDS=$(
-                for _un in "${_rev_users[@]}"; do
-                    tail -n $LOG_TAIL_LINES "$AUTH_LOG_FILE" 2>/dev/null |
-                    grep -E 'Accepted password|Password auth succeeded|session opened' |
-                    grep -w "$_un" |
-                    _redlibre_limiter_extract_pids
-                done | sort -nr | uniq | while read -r pid; do
-                    ps -p "$pid" >/dev/null 2>&1 && echo "$pid"
-                done
-            )
-            PID_TO_KILL=$(echo "$ALL_ACTIVE_PIDS" | head -1)
+            PID_TO_KILL=""
+            for _un in "${_rev_users[@]}"; do
+                PID_TO_KILL=$(_redlibre_user_ssh_pids "$_un" | head -1)
+                [[ -n "$PID_TO_KILL" ]] && break
+            done
             if [[ -n "$PID_TO_KILL" ]]; then
                 kill "$PID_TO_KILL" 2>/dev/null
-                echo "$(date): KILLED PID $PID_TO_KILL reseller global limit ($_tot/$_max_tot) path $_rev_path" >> "$LOG_KILL_FILE"
+                echo "$(date): KILLED PID $PID_TO_KILL reseller global limit ($_tot/$_max_tot) path $_rev_path" >>"$LOG_KILL_FILE"
             fi
         fi
     done
@@ -129,5 +109,5 @@ while true; do
 
     [[ -x /bin/revendedor-caducidad-apply ]] && /bin/revendedor-caducidad-apply
 
-    sleep $SLEEP_TIME # Esperar 10 segundos antes de la siguiente verificación
+    sleep "$SLEEP_TIME"
 done

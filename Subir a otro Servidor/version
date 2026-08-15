@@ -1,2 +1,2 @@
-1.0.0.40
-fix: conteo Onlines del menú (sshd [priv] no filtrar por root; fallback ps -eo).
+1.0.0.41
+Limitador opc.16: PAM estricto (sin GRACE 5min/proxy); opc.2/4 dejan PAM+screen; /bin/limiter cuenta por ps; autostart pgrep -x.
