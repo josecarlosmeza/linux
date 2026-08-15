@@ -52,9 +52,14 @@ _rl_detect_os() {
 
 _rl_count_online() {
     local n=0 d=0
-    # Solo procesos sshd/sshd-session (no volcado de toda la tabla de procesos)
-    n=$(ps -C sshd -o user=,args= 2>/dev/null | awk '$1!="root" && /[[:space:]]priv/ {c++} END{print c+0}')
-    n=$((n + $(ps -C sshd-session -o user= 2>/dev/null | awk '$1!="root" {c++} END{print c+0}')))
+    # Misma idea que el menú clásico: «sshd: user [priv]» (el dueño suele ser root;
+    # no filtrar por user). OpenSSH reciente: sshd-session por usuario.
+    n=$(ps -C sshd -o args= 2>/dev/null | awk '/\[priv\]/ {c++} END{print c+0}')
+    n=$((n + $(ps -C sshd-session -o user= 2>/dev/null | awk '$1!="root" && NF {c++} END{print c+0}')))
+    # Fallback si ps -C no listó (ps limitado / nombre distinto)
+    if [[ "${n:-0}" -eq 0 ]]; then
+        n=$(ps -eo args= 2>/dev/null | awk '/sshd:.*\[priv\]/ {c++} END{print c+0}')
+    fi
     if [[ -e /etc/default/dropbear ]]; then
         d=$(pgrep -c dropbear 2>/dev/null || echo 0)
         case "$d" in ''|*[!0-9]*) d=0 ;; esac

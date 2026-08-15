@@ -1,2 +1,2 @@
-1.0.0.39
-Menú: carga rápida con muchas sesiones (sin uexpired/top/ps-x síncronos); uexpired prioriza vence/ y evita pkill repetido.
+1.0.0.40
+fix: conteo Onlines del menú (sshd [priv] no filtrar por root; fallback ps -eo).
