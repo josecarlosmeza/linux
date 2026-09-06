@@ -1,2 +1,2 @@
-1.0.0.47
-Menú: HCR y ADV Proxy dentro de MODO DE CONEXIÓN (19→32→conexao 07/08). Conexao vuelve a opción 32.
+1.0.0.48
+HCR: elegir y modificar puerto/IP SSH destino (--target); opción dedicada en gestor-hcr.

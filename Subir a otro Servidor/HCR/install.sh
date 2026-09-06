@@ -14,6 +14,8 @@ MAX_DOWNLOAD_FRAME="6144"
 DOWNLOAD_POLL_TIMEOUT="8s"
 TRANSPORT="auto"
 TRANSPORT_SET="false"
+TARGET="127.0.0.1:22"
+TARGET_SET="false"
 ACTION="install"
 
 TEMP_UNIT=""
@@ -37,7 +39,7 @@ usage() {
 Install HCR Server as a systemd service from one self-contained directory.
 
 Usage:
-  sudo ./install.sh [--port <1-65535>] [--transport <tls|plain|auto>]
+  sudo ./install.sh [--port <1-65535>] [--transport <tls|plain|auto>] [--target <host:port>]
   sudo ./install.sh --uninstall
   ./install.sh --help
 
@@ -47,6 +49,7 @@ Options:
                       tls   accepts TLS only
                       plain accepts non-TLS HCR only
                       auto  accepts TLS and non-TLS HCR on the same port
+  --target <host:port> SSH backend. Default: 127.0.0.1:22
   --uninstall         Stop and unlink the service without deleting this directory
   -h, --help          Show this help
 
@@ -76,6 +79,12 @@ parse_args() {
 				TRANSPORT_SET="true"
 				shift 2
 				;;
+			--target)
+				[ "$#" -ge 2 ] || fail "--target requires a value."
+				TARGET="$2"
+				TARGET_SET="true"
+				shift 2
+				;;
 			--uninstall)
 				ACTION="uninstall"
 				shift
@@ -99,9 +108,22 @@ parse_args() {
 		fail "--port must be a number between 1 and 65535."
 	fi
 	PORT="$((10#${PORT}))"
+	# Validar host:puerto
+	case "${TARGET}" in
+		*:*) ;;
+		*) fail "--target must be host:port (ej. 127.0.0.1:22)." ;;
+	esac
+	_tgt_port="${TARGET##*:}"
+	case "${_tgt_port}" in
+		""|*[!0-9]*) fail "--target port must be a number." ;;
+	esac
+	if [ "$((10#${_tgt_port}))" -lt 1 ] || [ "$((10#${_tgt_port}))" -gt 65535 ]; then
+		fail "--target port must be between 1 and 65535."
+	fi
 	if [ "${ACTION}" = "uninstall" ]; then
 		[ "${TRANSPORT_SET}" = "false" ] || fail "--transport cannot be combined with --uninstall."
 		[ "${PORT_SET}" = "false" ] || fail "--port cannot be combined with --uninstall."
+		[ "${TARGET_SET}" = "false" ] || fail "--target cannot be combined with --uninstall."
 	fi
 }
 
@@ -255,7 +277,7 @@ Type=exec
 User=root
 Group=root
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${BINARY_PATH} --listen :${PORT} --target 127.0.0.1:22 --transport ${TRANSPORT}${tls_arguments} --max-download-frame ${MAX_DOWNLOAD_FRAME} --download-poll-timeout ${DOWNLOAD_POLL_TIMEOUT}
+ExecStart=${BINARY_PATH} --listen :${PORT} --target ${TARGET} --transport ${TRANSPORT}${tls_arguments} --max-download-frame ${MAX_DOWNLOAD_FRAME} --download-poll-timeout ${DOWNLOAD_POLL_TIMEOUT}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=15s
@@ -331,6 +353,7 @@ install_service() {
 	echo "Systemd unit: ${UNIT_SOURCE_PATH}"
 	echo "Transport: ${TRANSPORT}"
 	echo "Port: ${PORT}"
+	echo "Target SSH: ${TARGET}"
 }
 
 uninstall_service() {
