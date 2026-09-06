@@ -68,7 +68,7 @@ import signal
 import socket
 import sys
 import time
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ── Intentar uvloop (C extension, 2-3x más rápido) ───────────────────────
 try:
@@ -92,6 +92,27 @@ TARGET_VLESS_PORT = 10000
 TARGET_VLESS_PATH = "/VLESS"
 
 HDR_FORCE = b"X-Adv-Connection"   # ssh | vless
+HDR_TRUST = b"X-Adv-Proxy"         # sello para Xray sockopt.trustedXForwardedFor
+
+# Etiqueta en el path HTTP → backend SSH (IP, puerto).
+# Solo aplica si el primer segmento del path coincide con una clave (p. ej. /REDLIBRE).
+# Sin etiqueta: path / o vacío, CONNECT, banner SSH directo, o clave desconocida →
+# siempre TARGET_SSH_IP:TARGET_SSH_PORT (comportamiento original).
+# Los nombres son sensibles a mayúsculas/minúsculas tal como en el diccionario.
+SSH_BACKENDS: Dict[str, Tuple[str, int]] = {
+    "REDLIBRE": ("127.0.0.1", 22),
+    # "OTRO": ("10.0.0.2", 2222),
+}
+
+# Etiqueta en el path (WebSocket) → backend VLESS (IP, puerto, path en Xray).
+# Cualquier path que contenga "vless" (/VLESS, /dedicado-VP03-vless…) se trata como VLESS.
+# Si el primer segmento o la etiqueta completa coincide con una clave → ese backend.
+# Si no hay clave en el diccionario → TARGET_VLESS_IP:TARGET_VLESS_PORT y TARGET_VLESS_PATH.
+# Misma etiqueta en SSH y VLESS: por defecto gana VLESS en WS (usar X-Adv-Connection: ssh para forzar SSH).
+VLESS_BACKENDS: Dict[str, Tuple[str, int, str]] = {
+    "REDLIBRE": ("127.0.0.1", 10000, "/VLESS"),
+    # "US1": ("10.0.0.3", 10000, "/VLESS"),
+}
 
 # ── Relay ─────────────────────────────────────────────────────
 CHUNK          = 32768     # 32 KB: balance entre latencia y throughput
@@ -245,6 +266,50 @@ def _inject_ws_upgrade(buf: bytes) -> bytes:
     return (headers + extra + end) if extra else buf
 
 
+def _resolve_client_ip(buf: bytes, peer: object) -> str:
+    """IP real: CF-Connecting-IP → X-Forwarded-For → X-Real-IP → peer TCP."""
+    cf = header_value(buf, b"CF-Connecting-IP").decode("latin-1", "replace").strip()
+    if cf:
+        return cf.split(",")[0].strip()
+    xff = header_value(buf, b"X-Forwarded-For").decode("latin-1", "replace").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = header_value(buf, b"X-Real-IP").decode("latin-1", "replace").strip()
+    if xri:
+        return xri.split(",")[0].strip()
+    if peer and isinstance(peer, (tuple, list)) and peer:
+        return str(peer[0])
+    return "127.0.0.1"
+
+
+def _inject_client_ip(buf: bytes, client_ip: str) -> bytes:
+    """Reescribe IP headers y agrega X-Adv-Proxy (confianza Xray 26.6+)."""
+    idx = buf.find(b"\r\n\r\n")
+    if idx == -1:
+        return buf
+    headers = buf[:idx]
+    rest = buf[idx:]
+    ip_b = client_ip.encode("ascii", "replace")
+    skip = (
+        b"x-forwarded-for:",
+        b"x-real-ip:",
+        HDR_TRUST.lower() + b":",
+    )
+    lines = []
+    for raw in headers.split(b"\r\n"):
+        if not raw:
+            continue
+        if any(raw.lower().startswith(p) for p in skip):
+            continue
+        lines.append(raw)
+    extra = (
+        b"\r\nX-Real-IP: " + ip_b
+        + b"\r\nX-Forwarded-For: " + ip_b
+        + b"\r\n" + HDR_TRUST + b": 1"
+    )
+    return b"\r\n".join(lines) + extra + rest
+
+
 def _rewrite_vless_path(buf: bytes, target_path: bytes = b"/VLESS") -> bytes:
     """Normaliza /VLESS-AR5, /VLESS-US1... → path exacto que Xray tiene configurado."""
     eol = buf.find(b"\r\n")
@@ -274,7 +339,22 @@ def ws_accept_from_request(buf: bytes) -> str:
     return base64.b64encode(hashlib.sha1(key + guid).digest()).decode("ascii")
 
 
+def ws_request_path(buf: bytes) -> bytes:
+    """Request-target de la primera línea (sin query string)."""
+    if b"\r\n" not in buf:
+        return b""
+    try:
+        line0 = buf.split(b"\r\n", 1)[0]
+        parts = line0.split()
+        if len(parts) < 2:
+            return b""
+        return parts[1].split(b"?", 1)[0]
+    except Exception:
+        return b""
+
+
 def is_ws_vless_path(buf: bytes) -> bool:
+    """WebSocket VLESS si el path contiene 'vless' en cualquier posición."""
     if b"\r\n\r\n" not in buf:
         return False
     try:
@@ -286,7 +366,7 @@ def is_ws_vless_path(buf: bytes) -> bool:
         if method not in ("GET", "CONNECT", "POST", "HEAD"):
             return False
         path = parts[1].split("?", 1)[0]
-        return path.lower().startswith("/vless")
+        return b"vless" in path.lower()
     except Exception:
         return False
 
@@ -304,6 +384,146 @@ def http_body_tail(buf: bytes) -> bytes:
     return buf[i + 4:]
 
 
+def request_path_first_segment(buf: bytes) -> Optional[str]:
+    """Primer segmento del path (etiqueta). GET /, GET sin segmento, CONNECT → None."""
+    if b"\r\n" not in buf:
+        return None
+    line0 = buf.split(b"\r\n", 1)[0].strip()
+    parts = line0.split()
+    if len(parts) < 2:
+        return None
+    if parts[0].upper() == b"CONNECT":
+        return None
+    raw = parts[1]
+    if raw.startswith(b"http://") or raw.startswith(b"https://"):
+        try:
+            from urllib.parse import urlparse
+
+            raw = urlparse(raw.decode("latin-1", "replace")).path.encode("latin-1", "replace")
+        except Exception:
+            return None
+    path = raw.split(b"?", 1)[0]
+    seg = path.strip(b"/").split(b"/", 1)[0]
+    if not seg:
+        return None
+    return seg.decode("latin-1", "replace")
+
+
+def resolve_ssh_backend(buf: bytes) -> Tuple[str, int]:
+    """Etiqueta ausente o no listada → TARGET_SSH_IP:TARGET_SSH_PORT (local por defecto)."""
+    tag = request_path_first_segment(buf)
+    if tag is None or tag not in SSH_BACKENDS:
+        return (TARGET_SSH_IP, TARGET_SSH_PORT)
+    return SSH_BACKENDS[tag]
+
+
+def split_http_messages(buf: bytes) -> Tuple[List[bytes], bytes]:
+    """Separa peticiones HTTP completas (pipelining HTTP Custom)."""
+    complete: List[bytes] = []
+    pos = 0
+    while pos < len(buf):
+        idx = buf.find(b"\r\n\r\n", pos)
+        if idx == -1:
+            return complete, buf[pos:]
+        end = idx + 4
+        complete.append(buf[pos:end])
+        pos = end
+    return complete, b""
+
+
+def _vless_tag_from_message(msg: bytes) -> Optional[str]:
+    seg = request_path_first_segment(msg)
+    if seg is not None and seg in VLESS_BACKENDS:
+        return seg
+    raw = ws_request_path(msg).decode("latin-1", "replace").lstrip("/").split("?", 1)[0]
+    if raw and raw in VLESS_BACKENDS:
+        return raw
+    raw_lower = raw.lower()
+    for key in sorted(VLESS_BACKENDS.keys(), key=len, reverse=True):
+        kl = key.lower()
+        if raw_lower == kl or kl in raw_lower:
+            return key
+    return None
+
+
+def is_vless_ws_message(block: bytes) -> bool:
+    """Una sola petición HTTP: upgrade WS con 'vless' en el path o etiqueta en VLESS_BACKENDS."""
+    if b"\r\n\r\n" not in block:
+        return False
+    forced = forced_connection_mode(block)
+    if forced == "ssh":
+        return False
+    if not is_upgrade_websocket(block):
+        return False
+    return is_ws_vless_path(block) or _vless_tag_from_message(block) is not None
+
+
+def find_vless_ws_message(messages: List[bytes]) -> Optional[bytes]:
+    for msg in reversed(messages):
+        if is_vless_ws_message(msg):
+            return msg
+    return None
+
+
+def has_vless_ws_in_buf(buf: bytes) -> bool:
+    if b"\r\n\r\n" not in buf:
+        return False
+    messages, _ = split_http_messages(buf)
+    return find_vless_ws_message(messages) is not None
+
+
+def vless_backend_tag(buf: bytes) -> Optional[str]:
+    """Clave de VLESS_BACKENDS (escanea pipelining; usa el mensaje WS VLESS)."""
+    messages, _ = split_http_messages(buf)
+    ws_msg = find_vless_ws_message(messages)
+    if ws_msg:
+        tag = _vless_tag_from_message(ws_msg)
+        if tag:
+            return tag
+    return _vless_tag_from_message(buf)
+
+
+def path_tag_in_vless_backends(buf: bytes) -> bool:
+    return vless_backend_tag(buf) is not None
+
+
+def resolve_vless_backend(buf: bytes) -> Tuple[str, int, str]:
+    """Etiqueta ausente o no listada → TARGET_VLESS_* (local por defecto, como antes)."""
+    messages, _ = split_http_messages(buf)
+    ws_msg = find_vless_ws_message(messages) or buf
+    tag = _vless_tag_from_message(ws_msg)
+    if tag is None:
+        return (TARGET_VLESS_IP, TARGET_VLESS_PORT, TARGET_VLESS_PATH)
+    ip, port, path = VLESS_BACKENDS[tag]
+    return (ip, port, path)
+
+
+def http_403() -> bytes:
+    return (
+        b"HTTP/1.1 403 Forbidden\r\n"
+        b"Content-Length: 0\r\n"
+        b"Connection: keep-alive\r\n"
+        b"Server: nginx/1.24.0\r\n\r\n"
+    )
+
+
+async def read_http_headers(reader: asyncio.StreamReader, timeout: float = 20.0) -> bytes:
+    buf = b""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        idx = buf.find(b"\r\n\r\n")
+        if idx != -1:
+            return buf[: idx + 4]
+        try:
+            chunk = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+        except asyncio.TimeoutError:
+            continue
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
 def classify(buf: bytes) -> Optional[str]:
     if not buf:
         return None
@@ -317,9 +537,12 @@ def classify(buf: bytes) -> Optional[str]:
         forced = forced_connection_mode(buf)
         if forced == "ssh":
             return "ssh"
-        if forced == "vless":
+        # No clasificar VLESS solo por X-Adv-Connection en GET / (probe HTTP Custom).
+        if has_vless_ws_in_buf(buf):
             return "vless"
         if is_ws_vless_path(buf):
+            return "vless"
+        if is_upgrade_websocket(buf) and path_tag_in_vless_backends(buf):
             return "vless"
         return "ssh"
     if len(buf) >= 8:
@@ -327,6 +550,28 @@ def classify(buf: bytes) -> Optional[str]:
         if fl.startswith(b"GET ") or fl.startswith(b"POST ") or fl.startswith(b"HEAD "):
             return None
     return None
+
+
+def pipeline_awaiting_more(buf: bytes) -> bool:
+    """HTTP Custom [split]: no cerrar peek en GET / o REDLIBRE si puede venir el WS después."""
+    if has_vless_ws_in_buf(buf):
+        return False
+    messages, remainder = split_http_messages(buf)
+    if remainder:
+        return True
+    if not messages:
+        return False
+    for msg in messages:
+        if is_upgrade_websocket(msg):
+            # WS sin vless en path (/REDLIBRE…): puede seguir el bloque VLESS real.
+            if is_vless_ws_message(msg):
+                return False
+            return True
+    return True
+
+
+PIPELINE_PEEK_TIMEOUT = 5.0
+DEFAULT_PEEK_TIMEOUT = 2.0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -338,22 +583,48 @@ async def peek_loop(reader: asyncio.StreamReader) -> Tuple[bytes, str]:
         k = classify(buf)
         if k == "tls":
             return buf, "tls"
-        if k in ("ssh", "vless"):
+        if k == "vless":
             return buf, k
-        chunk = await reader.read(8192)
+        if k == "ssh" and not pipeline_awaiting_more(buf):
+            return buf, k
+        peek_timeout = (
+            PIPELINE_PEEK_TIMEOUT if pipeline_awaiting_more(buf) else DEFAULT_PEEK_TIMEOUT
+        )
+        try:
+            chunk = await asyncio.wait_for(reader.read(8192), timeout=peek_timeout)
+        except asyncio.TimeoutError:
+            if classify(buf) == "ssh" and not pipeline_awaiting_more(buf):
+                return buf, "ssh"
+            if has_vless_ws_in_buf(buf):
+                return buf, "vless"
+            break
         if not chunk:
             break
         buf += chunk
         k = classify(buf)
         if k == "tls":
             return buf, "tls"
-        if k in ("ssh", "vless"):
+        if k == "vless":
+            return buf, k
+        if k == "ssh" and not pipeline_awaiting_more(buf):
             return buf, k
     k2 = classify(buf)
-    if k2 in ("ssh", "vless"):
+    if k2 == "vless" or has_vless_ws_in_buf(buf):
+        return buf, "vless"
+    if k2 == "ssh" and not pipeline_awaiting_more(buf):
         return buf, k2
     if looks_tls(buf):
         return buf, "tls"
+    if pipeline_awaiting_more(buf):
+        msgs, rem = split_http_messages(buf)
+        paths = []
+        for m in msgs[:4]:
+            p = ws_request_path(m).decode("latin-1", "replace") or "?"
+            paths.append(p)
+        log(
+            "peer peek incompleto (%d B, %d msg, paths=%s, rem=%d B) — esperaba más pipelining HTTP"
+            % (len(buf), len(msgs), ",".join(paths), len(rem))
+        )
     return buf, "ssh"
 
 
@@ -391,6 +662,7 @@ async def transparent_relay(
     port: int,
     peer: object,
     kind: str,
+    vless_upstream_path: Optional[bytes] = None,
 ) -> None:
     started = time.time()
     up_w: Optional[asyncio.StreamWriter] = None
@@ -411,22 +683,37 @@ async def transparent_relay(
 
         if peek_buf:
             if kind == "vless":
-                send_buf = _inject_ws_upgrade(peek_buf)
-                send_buf = _rewrite_vless_path(send_buf, TARGET_VLESS_PATH.encode())
+                client_ip = _resolve_client_ip(peek_buf, peer)
+                up_path = (
+                    vless_upstream_path
+                    if vless_upstream_path is not None
+                    else TARGET_VLESS_PATH.encode("utf-8")
+                )
+                send_buf = _rewrite_vless_path(
+                    _inject_client_ip(_inject_ws_upgrade(peek_buf), client_ip),
+                    up_path,
+                )
             else:
                 send_buf = peek_buf
             up_w.write(send_buf)
             await up_w.drain()
 
+        t_c2u = asyncio.create_task(half_duplex(client_r, up_w, "c→up"))
+        t_u2c = asyncio.create_task(half_duplex(up_r, client_w, "up→c"))
         try:
-            await asyncio.gather(
-                half_duplex(client_r, up_w, "c→up"),
-                half_duplex(up_r, client_w, "up→c"),
+            _done, pending = await asyncio.wait(
+                {t_c2u, t_u2c}, return_when=asyncio.FIRST_COMPLETED
             )
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         except asyncio.CancelledError:
+            for t in (t_c2u, t_u2c):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(t_c2u, t_u2c, return_exceptions=True)
             raise
-        except Exception:
-            pass
 
     except asyncio.CancelledError:
         raise
@@ -443,6 +730,92 @@ async def transparent_relay(
                 await asyncio.shield(w.wait_closed())
             except Exception:
                 pass
+
+
+async def handle_vless_pipeline(
+    client_r: asyncio.StreamReader,
+    client_w: asyncio.StreamWriter,
+    peek_buf: bytes,
+    peer: object,
+) -> None:
+    """HTTP Custom con [split]: 403 a basura + 101 de Xray solo al mensaje WS VLESS."""
+    messages, _ = split_http_messages(peek_buf)
+    ws_msg = find_vless_ws_message(messages)
+    if not ws_msg:
+        log("peer=%r vless-pipe sin WS en buffer" % (peer,))
+        return
+
+    junk = [m for m in messages if m is not ws_msg]
+    vh, vp, vpth = resolve_vless_backend(ws_msg)
+    vtag = vless_backend_tag(ws_msg) or ws_request_path(ws_msg).decode(
+        "latin-1", "replace"
+    ).lstrip("/")
+    log("peer=%r vless-pipe path=/%s %d×junk → %s:%s%s"
+        % (peer, vtag, len(junk), vh, vp, vpth))
+
+    for _ in junk:
+        client_w.write(http_403())
+    if junk:
+        await client_w.drain()
+
+    up_r: Optional[asyncio.StreamReader] = None
+    up_w: Optional[asyncio.StreamWriter] = None
+    try:
+        up_r, up_w = await asyncio.wait_for(
+            asyncio.open_connection(vh, vp), timeout=20.0
+        )
+        tune_socket(client_w)
+        tune_socket(up_w)
+        tune_writer_buffers(client_w)
+        tune_writer_buffers(up_w)
+
+        client_ip = _resolve_client_ip(ws_msg, peer)
+        xray_req = _rewrite_vless_path(
+            _inject_client_ip(_inject_ws_upgrade(ws_msg), client_ip),
+            vpth.encode("utf-8"),
+        )
+        up_w.write(xray_req)
+        await up_w.drain()
+
+        up_headers = await read_http_headers(up_r)
+        if not up_headers or b"101" not in up_headers.split(b"\r\n", 1)[0]:
+            status = up_headers.split(b"\r\n", 1)[0] if up_headers else b"(vacio)"
+            log("peer=%r vless-pipe Xray no 101: %r" % (peer, status))
+            client_w.write(http_403())
+            await client_w.drain()
+            return
+
+        client_w.write(up_headers)
+        await client_w.drain()
+        log("peer=%r vless-pipe 101 → relay WS" % (peer,))
+
+        t_c2u = asyncio.create_task(half_duplex(client_r, up_w, "c→up"))
+        t_u2c = asyncio.create_task(half_duplex(up_r, client_w, "up→c"))
+        try:
+            _done, pending = await asyncio.wait(
+                {t_c2u, t_u2c}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        except asyncio.CancelledError:
+            for t in (t_c2u, t_u2c):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(t_c2u, t_u2c, return_exceptions=True)
+            raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as ex:
+        log("peer=%r vless-pipe error: %s" % (peer, ex))
+    finally:
+        for w in (up_w, client_w):
+            if w is not None:
+                try:
+                    w.close()
+                except Exception:
+                    pass
 
 
 async def handle_client(
@@ -478,13 +851,25 @@ async def handle_client(
             return
 
         if kind == "vless":
+            messages, _ = split_http_messages(peek_buf)
+            ws_msg = find_vless_ws_message(messages)
+            if ws_msg and len(messages) > 1:
+                await handle_vless_pipeline(client_r, client_w, peek_buf, peer)
+                return
+            vh, vp, vpth = resolve_vless_backend(peek_buf)
+            vtag = vless_backend_tag(peek_buf) or ws_request_path(peek_buf).decode(
+                "latin-1", "replace"
+            ).lstrip("/")
+            log("peer=%r vless path=/%s → %s:%s%s" % (peer, vtag, vh, vp, vpth))
             await transparent_relay(
                 client_r, client_w, peek_buf,
-                TARGET_VLESS_IP, TARGET_VLESS_PORT, peer, "vless",
+                vh, vp, peer, "vless",
+                vless_upstream_path=vpth.encode("utf-8"),
             )
             return
 
         if needs_local_http_handshake_for_ssh(peek_buf):
+            ssh_host, ssh_port = resolve_ssh_backend(peek_buf)
             if is_upgrade_websocket(peek_buf):
                 accept = ws_accept_from_request(peek_buf)
                 resp = (
@@ -504,13 +889,14 @@ async def handle_client(
             tail = http_body_tail(peek_buf)
             await transparent_relay(
                 client_r, client_w, tail,
-                TARGET_SSH_IP, TARGET_SSH_PORT, peer, "ssh-http",
+                ssh_host, ssh_port, peer, "ssh-http",
             )
             return
 
+        ssh_host, ssh_port = resolve_ssh_backend(peek_buf)
         await transparent_relay(
             client_r, client_w, peek_buf,
-            TARGET_SSH_IP, TARGET_SSH_PORT, peer, "ssh",
+            ssh_host, ssh_port, peer, "ssh",
         )
     except asyncio.CancelledError:
         raise
@@ -519,6 +905,8 @@ async def handle_client(
     finally:
         _active -= 1
         _sem.release()
+        # No llamar gc.collect() aquí: durante GeneratorExit provoca
+        # RuntimeError: coroutine ignored GeneratorExit (ver ram_clean).
         try:
             client_w.close()
             await asyncio.shield(client_w.wait_closed())
@@ -530,9 +918,11 @@ async def handle_client(
 #  TAREAS DE MANTENIMIENTO
 # ══════════════════════════════════════════════════════════════
 async def ram_clean() -> None:
+    """GC periódico en tarea de fondo (nunca en finally de handle_client)."""
     while True:
         await asyncio.sleep(RAM_CLEAN_SEC)
-        gc.collect()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, gc.collect)
 
 
 async def stats_reporter() -> None:
@@ -566,10 +956,19 @@ async def main() -> None:
         log("escuchando %s:%s  (backlog=%d  max_conn=%d  loop=%s)"
             % (BIND_HOST, p, SERVER_BACKLOG, MAX_CONN, _LOOP_NAME))
 
-    log("SSH %s:%s | VLESS %s:%s%s | forzar %s: ssh|vless"
-        % (TARGET_SSH_IP, TARGET_SSH_PORT,
-           TARGET_VLESS_IP, TARGET_VLESS_PORT, TARGET_VLESS_PATH,
-           HDR_FORCE.decode()))
+    back_list = ", ".join(
+        "%s→%s:%s" % (k, h, p) for k, (h, p) in sorted(SSH_BACKENDS.items())
+    )
+    vless_list = ", ".join(
+        "%s→%s:%s%s" % (k, h, p, path)
+        for k, (h, p, path) in sorted(VLESS_BACKENDS.items())
+    )
+    log("SSH default %s:%s [%s]"
+        % (TARGET_SSH_IP, TARGET_SSH_PORT, back_list or "sin etiquetas"))
+    log("VLESS default %s:%s%s [%s] | forzar %s: ssh|vless"
+        % (TARGET_VLESS_IP, TARGET_VLESS_PORT, TARGET_VLESS_PATH,
+           vless_list or "sin etiquetas por path", HDR_FORCE.decode()))
+    log("Xray Sockopt: trustedXForwardedFor = [%s]" % HDR_TRUST.decode())
 
     await asyncio.gather(*[s.serve_forever() for s in servers])
 

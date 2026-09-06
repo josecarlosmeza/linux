@@ -1,0 +1,395 @@
+#!/bin/bash
+#====================================================
+# Submenu — Gestor ADV Proxy WS (peek relay puerto 80)
+# Instalador: Subir a otro Servidor/adv-proxy-ws
+# Destino: /opt/advanced-proxy/proxy.py + systemd adv-proxy
+# Menu principal opcion 33
+#====================================================
+[[ $EUID -eq 0 ]] || {
+    echo -e "\033[1;31mEjecute como root.\033[0m"
+    exit 1
+}
+
+CONF_DIR="/etc/RedLibre"
+CONF_FILE="$CONF_DIR/adv-proxy.conf"
+PROXY_PY="/opt/advanced-proxy/proxy.py"
+SERVICE_NAME="adv-proxy"
+INSTALL_SCRIPT_URL="https://github.com/josecarlosmeza/linux/raw/main/Subir%20a%20otro%20Servidor/adv-proxy-ws"
+
+PORT_DEFAULT="80"
+SSH_IP_DEFAULT="127.0.0.1"
+SSH_PORT_DEFAULT="22"
+VLESS_IP_DEFAULT="127.0.0.1"
+VLESS_PORT_DEFAULT="10000"
+VLESS_PATH_DEFAULT="/VLESS"
+
+_adv_load_conf() {
+    BIND_PORTS="$PORT_DEFAULT"
+    TARGET_SSH_IP="$SSH_IP_DEFAULT"
+    TARGET_SSH_PORT="$SSH_PORT_DEFAULT"
+    TARGET_VLESS_IP="$VLESS_IP_DEFAULT"
+    TARGET_VLESS_PORT="$VLESS_PORT_DEFAULT"
+    TARGET_VLESS_PATH="$VLESS_PATH_DEFAULT"
+    if [[ -f "$CONF_FILE" ]]; then
+        # shellcheck disable=SC1090
+        . "$CONF_FILE"
+    fi
+    BIND_PORTS="${BIND_PORTS:-$PORT_DEFAULT}"
+    TARGET_SSH_IP="${TARGET_SSH_IP:-$SSH_IP_DEFAULT}"
+    TARGET_SSH_PORT="${TARGET_SSH_PORT:-$SSH_PORT_DEFAULT}"
+    TARGET_VLESS_IP="${TARGET_VLESS_IP:-$VLESS_IP_DEFAULT}"
+    TARGET_VLESS_PORT="${TARGET_VLESS_PORT:-$VLESS_PORT_DEFAULT}"
+    TARGET_VLESS_PATH="${TARGET_VLESS_PATH:-$VLESS_PATH_DEFAULT}"
+}
+
+_adv_save_conf() {
+    mkdir -p "$CONF_DIR"
+    cat >"$CONF_FILE" <<EOF
+# RedLibre ADV Proxy WS — generado por gestor-advproxy
+BIND_PORTS=$BIND_PORTS
+TARGET_SSH_IP=$TARGET_SSH_IP
+TARGET_SSH_PORT=$TARGET_SSH_PORT
+TARGET_VLESS_IP=$TARGET_VLESS_IP
+TARGET_VLESS_PORT=$TARGET_VLESS_PORT
+TARGET_VLESS_PATH=$TARGET_VLESS_PATH
+EOF
+    chmod 644 "$CONF_FILE"
+}
+
+_adv_active() {
+    command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null
+}
+
+_adv_status_text() {
+    if _adv_active; then
+        _adv_load_conf
+        printf '%s' "ACTIVO · :${BIND_PORTS} · SSH ${TARGET_SSH_IP}:${TARGET_SSH_PORT}"
+    elif [[ -f "$PROXY_PY" ]] || [[ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]]; then
+        printf '%s' "INSTALADO / INACTIVO"
+    else
+        printf '%s' "NO INSTALADO"
+    fi
+}
+
+_adv_pause() {
+    echo -ne "\033[1;33m[ENTER]\033[0m "
+    read -r
+}
+
+_adv_ask_ports() {
+    local def ans
+    def="${1:-$PORT_DEFAULT}"
+    echo -e "\033[1;33mPuertos de escucha (coma o espacio). Ej: 80 o 80,8080\033[0m"
+    echo -ne "\033[1;32mPuertos [\033[1;37m$def\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/,}"
+    ans="${ans//,,/,}"
+    ans="${ans#,}"
+    ans="${ans%,}"
+    [[ -z "$ans" ]] && ans="$def"
+    # Validar numeros
+    local p ok=1
+    IFS=',' read -ra _parts <<<"$ans"
+    for p in "${_parts[@]}"; do
+        p="${p// /}"
+        if ! [[ "$p" =~ ^[1-9][0-9]*$ ]] || [[ "$p" -gt 65535 ]]; then
+            ok=0
+            break
+        fi
+    done
+    if [[ "$ok" -ne 1 ]]; then
+        echo -e "\033[1;31mPuertos invalidos; se usa $def.\033[0m"
+        ans="$def"
+    fi
+    _ASK_PORTS="$ans"
+}
+
+_adv_ask_ssh() {
+    local dip dport ans
+    dip="${1:-$SSH_IP_DEFAULT}"
+    dport="${2:-$SSH_PORT_DEFAULT}"
+    echo -ne "\033[1;32mSSH destino IP [\033[1;37m$dip\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$dip"
+    _ASK_SSH_IP="$ans"
+    echo -ne "\033[1;32mSSH destino puerto [\033[1;37m$dport\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$dport"
+    if ! [[ "$ans" =~ ^[1-9][0-9]*$ ]] || [[ "$ans" -gt 65535 ]]; then
+        ans="$dport"
+    fi
+    _ASK_SSH_PORT="$ans"
+}
+
+_adv_ask_vless() {
+    local dip dport dpath ans
+    dip="${1:-$VLESS_IP_DEFAULT}"
+    dport="${2:-$VLESS_PORT_DEFAULT}"
+    dpath="${3:-$VLESS_PATH_DEFAULT}"
+    echo -ne "\033[1;32mVLESS destino IP [\033[1;37m$dip\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$dip"
+    _ASK_VLESS_IP="$ans"
+    echo -ne "\033[1;32mVLESS destino puerto [\033[1;37m$dport\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$dport"
+    if ! [[ "$ans" =~ ^[1-9][0-9]*$ ]] || [[ "$ans" -gt 65535 ]]; then
+        ans="$dport"
+    fi
+    _ASK_VLESS_PORT="$ans"
+    echo -ne "\033[1;32mVLESS path [\033[1;37m$dpath\033[1;32m]: \033[1;37m"
+    read -r ans
+    ans="${ans//[[:space:]]/}"
+    [[ -z "$ans" ]] && ans="$dpath"
+    [[ "$ans" != /* ]] && ans="/$ans"
+    _ASK_VLESS_PATH="$ans"
+}
+
+_adv_ports_to_py_list() {
+    # 80,8080 -> [80, 8080]
+    local raw="$1" out="" p
+    IFS=',' read -ra _parts <<<"$raw"
+    for p in "${_parts[@]}"; do
+        p="${p// /}"
+        [[ -z "$p" ]] && continue
+        [[ -n "$out" ]] && out+=", "
+        out+="$p"
+    done
+    printf '[%s]' "$out"
+}
+
+_adv_apply_config_to_py() {
+    [[ -f "$PROXY_PY" ]] || return 1
+    local py_ports
+    py_ports=$(_adv_ports_to_py_list "$BIND_PORTS")
+    sed -i "s/^BIND_PORTS = .*/BIND_PORTS = ${py_ports}/" "$PROXY_PY"
+    sed -i "s/^TARGET_SSH_IP   = .*/TARGET_SSH_IP   = \"${TARGET_SSH_IP}\"/" "$PROXY_PY"
+    sed -i "s/^TARGET_SSH_PORT = .*/TARGET_SSH_PORT = ${TARGET_SSH_PORT}/" "$PROXY_PY"
+    sed -i "s/^TARGET_VLESS_IP   = .*/TARGET_VLESS_IP   = \"${TARGET_VLESS_IP}\"/" "$PROXY_PY"
+    sed -i "s/^TARGET_VLESS_PORT = .*/TARGET_VLESS_PORT = ${TARGET_VLESS_PORT}/" "$PROXY_PY"
+    # path con barras: escapar para sed
+    local esc_path
+    esc_path=$(printf '%s' "$TARGET_VLESS_PATH" | sed 's/[\/&]/\\&/g')
+    sed -i "s/^TARGET_VLESS_PATH = .*/TARGET_VLESS_PATH = \"${esc_path}\"/" "$PROXY_PY"
+}
+
+_adv_run_installer() {
+    local tmp
+    tmp=$(mktemp) || return 1
+    echo -e "\033[1;32mDescargando instalador adv-proxy-ws…\033[0m"
+    if ! wget -qO "$tmp" "$INSTALL_SCRIPT_URL"; then
+        rm -f "$tmp"
+        echo -e "\033[1;31mNo se pudo descargar el instalador.\033[0m"
+        return 1
+    fi
+    sed -i 's/\r$//' "$tmp" 2>/dev/null || true
+    chmod +x "$tmp"
+    echo -e "\033[1;33mAviso: el instalador libera el puerto 80 (fuser) y aplica sysctl.\033[0m"
+    bash "$tmp"
+    local ec=$?
+    rm -f "$tmp"
+    return "$ec"
+}
+
+_adv_do_install() {
+    clear
+    _adv_load_conf
+    echo -e "\033[1;32mInstalar / reactivar ADV Proxy WS\033[0m"
+    echo -e "\033[1;37mRelay peek en puerto(s) → SSH y/o VLESS-WS (Xray)\033[0m"
+    echo ""
+    _adv_ask_ports "$BIND_PORTS"
+    BIND_PORTS="$_ASK_PORTS"
+    echo ""
+    _adv_ask_ssh "$TARGET_SSH_IP" "$TARGET_SSH_PORT"
+    TARGET_SSH_IP="$_ASK_SSH_IP"
+    TARGET_SSH_PORT="$_ASK_SSH_PORT"
+    echo ""
+    _adv_ask_vless "$TARGET_VLESS_IP" "$TARGET_VLESS_PORT" "$TARGET_VLESS_PATH"
+    TARGET_VLESS_IP="$_ASK_VLESS_IP"
+    TARGET_VLESS_PORT="$_ASK_VLESS_PORT"
+    TARGET_VLESS_PATH="$_ASK_VLESS_PATH"
+    _adv_save_conf
+    echo ""
+    if ! _adv_run_installer; then
+        echo -e "\033[1;31mInstalacion fallida.\033[0m"
+        _adv_pause
+        return 1
+    fi
+    _adv_apply_config_to_py || true
+    systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || true
+    echo ""
+    echo -e "\033[1;32mListo. Estado: $(_adv_status_text)\033[0m"
+    _adv_pause
+}
+
+_adv_do_reconfig() {
+    clear
+    _adv_load_conf
+    if [[ ! -f "$PROXY_PY" ]]; then
+        echo -e "\033[1;31mNo instalado. Use la opcion 1.\033[0m"
+        _adv_pause
+        return 1
+    fi
+    echo -e "\033[1;32mCambiar puertos / destinos\033[0m"
+    echo ""
+    _adv_ask_ports "$BIND_PORTS"
+    BIND_PORTS="$_ASK_PORTS"
+    echo ""
+    _adv_ask_ssh "$TARGET_SSH_IP" "$TARGET_SSH_PORT"
+    TARGET_SSH_IP="$_ASK_SSH_IP"
+    TARGET_SSH_PORT="$_ASK_SSH_PORT"
+    echo ""
+    _adv_ask_vless "$TARGET_VLESS_IP" "$TARGET_VLESS_PORT" "$TARGET_VLESS_PATH"
+    TARGET_VLESS_IP="$_ASK_VLESS_IP"
+    TARGET_VLESS_PORT="$_ASK_VLESS_PORT"
+    TARGET_VLESS_PATH="$_ASK_VLESS_PATH"
+    _adv_save_conf
+    _adv_apply_config_to_py
+    systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || true
+    echo -e "\033[1;32mAplicado. Estado: $(_adv_status_text)\033[0m"
+    _adv_pause
+}
+
+_adv_do_restart() {
+    if systemctl restart "${SERVICE_NAME}.service" 2>/dev/null; then
+        echo -e "\033[1;32mServicio reiniciado.\033[0m"
+    else
+        echo -e "\033[1;31mNo se pudo reiniciar (¿instalado?).\033[0m"
+    fi
+    _adv_pause
+}
+
+_adv_do_stop() {
+    systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+    echo -e "\033[1;32mServicio detenido.\033[0m"
+    _adv_pause
+}
+
+_adv_do_status() {
+    clear
+    _adv_load_conf
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\E[44;1;37m     Estado ADV Proxy WS      \E[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo ""
+    echo -e "\033[1;33mEstado:\033[1;37m $(_adv_status_text)\033[0m"
+    echo -e "\033[1;33mConfig:\033[1;37m $CONF_FILE\033[0m"
+    [[ -f "$CONF_FILE" ]] && cat "$CONF_FILE"
+    echo ""
+    if [[ -f "$PROXY_PY" ]]; then
+        echo -e "\033[1;33mValores en proxy.py:\033[0m"
+        grep -E '^(BIND_PORTS|TARGET_SSH_|TARGET_VLESS_)' "$PROXY_PY" 2>/dev/null || true
+    fi
+    echo ""
+    echo -e "\033[1;33m# systemctl status\033[0m"
+    systemctl status "${SERVICE_NAME}.service" --no-pager -l 2>/dev/null | head -n 22 || echo "(sin unidad)"
+    echo ""
+    echo -e "\033[1;33m# Escucha\033[0m"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnp 2>/dev/null | grep -E 'python|:80\b' | head -n 15 || true
+    else
+        netstat -tlnp 2>/dev/null | grep -E 'python|:80' | head -n 15 || true
+    fi
+    echo ""
+    echo -e "\033[1;33m# Ultimos logs\033[0m"
+    journalctl -u "${SERVICE_NAME}.service" -n 25 --no-pager 2>/dev/null || echo "(sin journal)"
+    echo ""
+    _adv_pause
+}
+
+_adv_do_uninstall() {
+    clear
+    echo -e "\033[1;31mDesinstalar ADV Proxy WS\033[0m"
+    echo -e "\033[1;37mQuita el servicio systemd y /opt/advanced-proxy\033[0m"
+    echo -ne "\033[1;32m¿Confirmar? [s/N]: \033[1;37m"
+    read -r ans
+    ans=$(echo "${ans:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ans" != "s" && "$ans" != "si" && "$ans" != "y" ]]; then
+        echo -e "\033[1;33mCancelado.\033[0m"
+        _adv_pause
+        return 0
+    fi
+    systemctl disable --now "${SERVICE_NAME}.service" 2>/dev/null || true
+    rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+    rm -rf /opt/advanced-proxy
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed "${SERVICE_NAME}.service" 2>/dev/null || true
+    echo -ne "\033[1;32m¿Eliminar tambien /etc/sysctl.d/99-adv-proxy.conf? [s/N]: \033[1;37m"
+    read -r ans
+    ans=$(echo "${ans:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ans" == "s" || "$ans" == "si" || "$ans" == "y" ]]; then
+        rm -f /etc/sysctl.d/99-adv-proxy.conf
+        echo -e "\033[1;37m(sysctl no se revierte automaticamente; reinicie o aplique valores previos si hace falta)\033[0m"
+    fi
+    echo -e "\033[1;32mDesinstalado.\033[0m"
+    _adv_pause
+}
+
+_adv_show_help() {
+    clear
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\E[44;1;37m     Que hace ADV Proxy WS      \E[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo ""
+    echo -e "\033[1;37mProxy TCP (peek + relay) tipicamente en :80.\033[0m"
+    echo -e "\033[1;37mEnruta trafico hacia:\033[0m"
+    echo -e "  \033[1;33m• SSH\033[1;37m  (CONNECT / path /REDLIBRE / banner SSH)\033[0m"
+    echo -e "  \033[1;33m• VLESS-WS\033[1;37m (WebSocket con path vless → Xray)\033[0m"
+    echo ""
+    echo -e "\033[1;37mHeaders utiles:\033[0m"
+    echo -e "  X-Adv-Connection: ssh | vless"
+    echo -e "  X-Adv-Proxy: sello para trustedXForwardedFor en Xray"
+    echo ""
+    echo -e "\033[1;37mCliente HTTP Custom: payload hacia IP:80 con split.\033[0m"
+    echo -e "\033[1;37mRequiere Python 3.7+; opcional uvloop.\033[0m"
+    echo ""
+    _adv_pause
+}
+
+while true; do
+    clear
+    _adv_load_conf
+    tput setaf 7
+    tput setab 4
+    tput bold
+    printf '%36s%s%-8s\n' "Gestor ADV Proxy WS"
+    tput sgr0
+    echo ""
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\033[1;33m  Peek relay :80 → SSH / VLESS-WS\033[0m"
+    echo -e "\033[1;33m  Estado: \033[1;37m$(_adv_status_text)\033[0m"
+    if [[ -f "$CONF_FILE" ]]; then
+        echo -e "\033[1;33m  Puertos \033[1;37m$BIND_PORTS\033[1;33m  SSH \033[1;37m${TARGET_SSH_IP}:${TARGET_SSH_PORT}\033[1;33m  VLESS \033[1;37m${TARGET_VLESS_IP}:${TARGET_VLESS_PORT}${TARGET_VLESS_PATH}\033[0m"
+    fi
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo ""
+    echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Instalar / activar ADV Proxy WS\033[0m"
+    echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Cambiar puertos / destinos SSH-VLESS\033[0m"
+    echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Reiniciar servicio\033[0m"
+    echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Detener servicio\033[0m"
+    echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Ver estado y logs\033[0m"
+    echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Desinstalar\033[0m"
+    echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Ayuda / como funciona\033[0m"
+    echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver al menu\033[0m"
+    echo ""
+    echo -ne "\033[1;32mOpcion: \033[1;37m"
+    read -r _op
+    case "${_op:-}" in
+        1) _adv_do_install ;;
+        2) _adv_do_reconfig ;;
+        3) clear; _adv_do_restart ;;
+        4) clear; _adv_do_stop ;;
+        5) _adv_do_status ;;
+        6) _adv_do_uninstall ;;
+        7) _adv_show_help ;;
+        0 | 00) exit 0 ;;
+        *)
+            echo -e "\033[1;31mOpcion no valida.\033[0m"
+            sleep 2
+            ;;
+    esac
+done
