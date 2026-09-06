@@ -1,0 +1,4 @@
+- linux amd64
+- ./install —port 8880 —transport plain
+- you can adjust ur self to get best performance MAX_DOWNLOAD_FRAME or DOWNLOAD_POLL_TIMEOUT
+- suport v7.10.12 (808) and above
