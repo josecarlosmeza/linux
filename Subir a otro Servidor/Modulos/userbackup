@@ -1,4 +1,53 @@
 #!/bin/bash
+#====================================================
+# Backup / restauración administrador
+# Incluye usuarios SSH y configuración completa de revendedores
+#====================================================
+
+# Rutas extra del rol revendedor (solo si existen, para no romper tar)
+_redlibre_backup_extra_paths() {
+	local p
+	for p in \
+		/etc/RedLibre/revendedores \
+		/etc/sudoers.d/redlibre-revendedores \
+		/etc/ssh/sshd_config.d/50-redlibre-revendedores.conf
+	do
+		[[ -e "$p" ]] && printf '%s ' "$p"
+	done
+}
+
+_redlibre_backup_core_paths() {
+	# Núcleo siempre presente en el .vps del admin
+	printf '%s' "/etc/shadow /etc/passwd /etc/group /etc/gshadow"
+	[[ -d /etc/RedLibre/senha ]] && printf ' %s' "/etc/RedLibre/senha"
+	[[ -d /etc/RedLibre/vence ]] && printf ' %s' "/etc/RedLibre/vence"
+	printf ' %s' "$(_redlibre_backup_extra_paths)"
+}
+
+_redlibre_create_backup() {
+	# $1 = archivo destino  $2 = "bot" para incluir /etc/bot
+	local dest="$1" extra_bot="" db=""
+	[[ -n "$dest" ]] || dest="/root/backup.vps"
+	[[ "${2:-}" = "bot" && -d /etc/bot ]] && extra_bot="/etc/bot"
+	[[ -f /root/usuarios.db ]] && db="/root/usuarios.db"
+	rm -rf "$dest" >/dev/null 2>&1
+	# shellcheck disable=SC2086
+	tar cvf "$dest" $db $(_redlibre_backup_core_paths) $extra_bot >/dev/null 2>&1
+}
+
+_redlibre_restore_revendedores() {
+	mkdir -p /etc/RedLibre/senha /etc/RedLibre/vence /etc/RedLibre/revendedores 2>/dev/null || true
+	if [[ -f /etc/sudoers.d/redlibre-revendedores ]]; then
+		chmod 440 /etc/sudoers.d/redlibre-revendedores 2>/dev/null || true
+	fi
+	if [[ -x /bin/gestor-revendedores ]] && grep -q -- '--after-restore' /bin/gestor-revendedores 2>/dev/null; then
+		/bin/gestor-revendedores --after-restore >/dev/null 2>&1 || true
+	else
+		[[ -x /bin/revendedor-sshd-lock ]] && /bin/revendedor-sshd-lock >/dev/null 2>&1 || true
+		[[ -x /bin/revendedor-caducidad-apply ]] && /bin/revendedor-caducidad-apply >/dev/null 2>&1 || true
+	fi
+}
+
 clear
 backbot=$1
 [[ -z $backbot ]] && {
@@ -80,10 +129,10 @@ backbot=$1
 		then
 			rm -rf $HOME/backup.vps > /dev/null 2>&1
 			sleep 1
-			tar cvf /root/backup.vps /root/usuarios.db /etc/shadow /etc/passwd /etc/group /etc/gshadow /etc/RedLibre/senha /etc/RedLibre/vence > /dev/null 2>&1
+			_redlibre_create_backup /root/backup.vps
 			echo ""
 			echo -e "\033[1;32mBACKUP CRIADO COM SUCESSO !\033[0m"
-			echo -e "\033[1;37m(Incluye usuarios.db, shadow, senha/ y vence/)\033[0m"
+			echo -e "\033[1;37m(Incluye usuarios.db, shadow, senha/, vence/ y revendedores/)\033[0m"
 			echo ""
 			echo -ne "\033[1;32mGERAR LINK PARA DOWNLOAD \033[1;31m? \033[1;33m[s/n]:\033[1;37m "; read resp
 			if [[ "$resp" = "s" ]]; then
@@ -110,11 +159,12 @@ backbot=$1
 			echo ""
 			echo -e "\033[1;32mCriando backup...\033[0m"
 			echo ""
-			tar cvf /root/backup.vps /etc/shadow /etc/passwd /etc/group /etc/gshadow /etc/RedLibre/senha /etc/RedLibre/vence > /dev/null 2>&1
+			_redlibre_create_backup /root/backup.vps
 			sleep 2s
 			echo ""
 			echo -e "\033[1;33mO Arquivo \033[1;32mbackup.vps"
 			echo -e "\033[1;33mfoi criado com sucesso no diretório \033[1;31m/root\033[0m"
+			echo -e "\033[1;37m(Incluye shadow, senha/, vence/ y revendedores/)\033[0m"
 			echo ""
 		fi
 	fi
@@ -129,10 +179,10 @@ backbot=$1
 			cd /
 			tar -xvf backup.vps
 			rm /backup.vps
-			mkdir -p /etc/RedLibre/senha /etc/RedLibre/vence 2>/dev/null || true
 			[[ -x /bin/vence-migrar ]] && /bin/vence-migrar --quiet 2>/dev/null || true
+			_redlibre_restore_revendedores
 			echo ""
-			echo -e "\033[1;36mUsuários e\033[1;36m senhas importados com sucesso.\033[0m"
+			echo -e "\033[1;36mUsuários, senhas e configurações de revendedores importados com sucesso.\033[0m"
 			echo ""
 			exit
 		else
@@ -147,8 +197,7 @@ backbot=$1
 		menu
 	fi
 } || {
-	rm /root/backup.vps 1>/dev/null 2>/dev/null
-	tar cvf /root/backup.vps /root/usuarios.db /etc/shadow /etc/passwd /etc/group /etc/gshadow /etc/bot /etc/RedLibre/senha /etc/RedLibre/vence 1>/dev/null 2>/dev/null
+	_redlibre_create_backup /root/backup.vps bot
 	[[ -d "/etc/RedLibre/backups" ]] && mv /root/backup.vps /etc/RedLibre/backups/backup.vps
 	exit
 }

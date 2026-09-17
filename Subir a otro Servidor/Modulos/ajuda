@@ -17,7 +17,7 @@ echo -e " \033[1;37m[\033[1;31m11\033[1;37m] - \033[1;33m Prueba de velocidad de
 echo -e " \033[1;37m[\033[1;31m12\033[1;37m] - \033[1;33m Definir banner para la VPS"
 echo -e " \033[1;37m[\033[1;31m13\033[1;37m] - \033[1;33m Mostrar tráfico consumido"
 echo -e " \033[1;37m[\033[1;31m14\033[1;37m] - \033[1;33m Limpieza y reparación de errores"
-echo -e " \033[1;37m[\033[1;31m15\033[1;37m] - \033[1;33m Crear backup de usuarios"
+echo -e " \033[1;37m[\033[1;31m15\033[1;37m] - \033[1;33m Crear backup de usuarios y revendedores"
 echo -e " \033[1;37m[\033[1;31m16\033[1;37m] - \033[1;33m Activar limitador de conexiones"
 echo -e " \033[1;37m[\033[1;31m17\033[1;37m] - \033[1;33m Instalar Bad UDP para VoIP"
 echo -e " \033[1;37m[\033[1;31m18\033[1;37m] - \033[1;33m Mostrar información de la VPS"

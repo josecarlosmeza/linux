@@ -1,2 +1,2 @@
-1.0.0.48
-HCR: elegir y modificar puerto/IP SSH destino (--target); opción dedicada en gestor-hcr.
+1.0.0.49
+backup admin/bot incluye revendedores (conf, clientes, sudo, sshd) y los reactiva al restaurar.

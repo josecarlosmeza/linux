@@ -36,6 +36,63 @@ redlibre_rev_ssh_lock_apply() {
     fi
 }
 
+redlibre_rev_ensure_bashrc() {
+    local login="$1"
+    local home brc
+    [[ -n "$login" ]] || return 0
+    id "$login" &>/dev/null || return 0
+    home=$(getent passwd "$login" | cut -d: -f6)
+    [[ -n "$home" ]] || home="/home/$login"
+    if [[ ! -d "$home" ]]; then
+        mkdir -p "$home" 2>/dev/null || return 0
+        chown "${login}:${login}" "$home" 2>/dev/null || true
+        chmod 750 "$home" 2>/dev/null || true
+    fi
+    brc="$home/.bashrc"
+    if [[ -f "$brc" ]] && grep -q 'menu-revendedor' "$brc" 2>/dev/null; then
+        return 0
+    fi
+    {
+        echo ""
+        echo "# RedLibre — panel revendedor al iniciar sesión SSH"
+        echo "if [[ \$- == *i* ]] && [[ -t 0 ]]; then /bin/menu-revendedor; fi"
+    } >>"$brc"
+    chown "${login}:${login}" "$brc" 2>/dev/null || true
+}
+
+# Reactiva rol revendedor tras restaurar backup (sudo, home/.bashrc, sshd, caducidad)
+redlibre_rev_apply_restored() {
+    local _tmpf _d _ru _had=0
+    _tmpf=$(mktemp) || return 1
+    shopt -s nullglob
+    for _d in /etc/RedLibre/revendedores/*; do
+        [[ -d "$_d" ]] || continue
+        _ru=$(basename "$_d")
+        [[ -n "$_ru" && "$_ru" != "*" ]] || continue
+        _had=1
+        redlibre_rev_sudo_line "$_ru" >>"$_tmpf"
+        redlibre_rev_ensure_bashrc "$_ru"
+        [[ -f "$_d/conf" ]] && chmod 644 "$_d/conf" 2>/dev/null || true
+    done
+    shopt -u nullglob
+    if [[ "$_had" -eq 1 && -s "$_tmpf" ]]; then
+        mkdir -p /etc/sudoers.d
+        mv "$_tmpf" "$SFILE"
+        chmod 440 "$SFILE"
+        redlibre_rev_sync_sudo
+    else
+        rm -f "$_tmpf"
+    fi
+    redlibre_rev_ssh_lock_apply
+    [[ -x /bin/revendedor-caducidad-apply ]] && /bin/revendedor-caducidad-apply
+    return 0
+}
+
+if [[ "${1:-}" == "--after-restore" || "${1:-}" == "--sync-sudo" ]]; then
+    redlibre_rev_apply_restored
+    exit $?
+fi
+
 clear
 tput setaf 7
 tput setab 4
@@ -369,30 +426,13 @@ case "$_m" in
         ;;
     5)
         clear
-        _tmpf=$(mktemp)
-        shopt -s nullglob
-        for _d in /etc/RedLibre/revendedores/*; do
-            [[ -d "$_d" ]] || continue
-            _ru=$(basename "$_d")
-            redlibre_rev_sudo_line "$_ru" >>"$_tmpf"
-        done
-        shopt -u nullglob
-        if [[ ! -s "$_tmpf" ]]; then
-            rm -f "$_tmpf"
-            echo -e "\033[1;33mNo hay revendedores registrados.\033[0m"
-        else
-            mkdir -p /etc/sudoers.d
-            mv "$_tmpf" "$SFILE"
-            chmod 440 "$SFILE"
-            redlibre_rev_sync_sudo
-            shopt -s nullglob
-            for _cf in /etc/RedLibre/revendedores/*/conf; do
-                [[ -f "$_cf" ]] && chmod 644 "$_cf" 2>/dev/null
-            done
-            shopt -u nullglob
+        if [[ -d /etc/RedLibre/revendedores ]] && compgen -G "/etc/RedLibre/revendedores/*" >/dev/null; then
+            redlibre_rev_apply_restored
             echo -e "\033[1;32mArchivo sudo actualizado para todos los revendedores (\033[1;33m$SFILE\033[1;32m).\033[0m"
+        else
+            redlibre_rev_ssh_lock_apply
+            echo -e "\033[1;33mNo hay revendedores registrados.\033[0m"
         fi
-        redlibre_rev_ssh_lock_apply
         echo ""
         echo -ne "\033[1;33m[ENTER]\033[0m"
         read -r
