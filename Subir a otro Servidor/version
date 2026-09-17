@@ -1,2 +1,2 @@
-1.0.0.53
-opción 17: gestor udppy (escucha, DNS, MTU, conexiones, backlog, verbose, uvloop).
+1.0.0.54
+fix limitador screen: /run/screen modo 775 (AlmaLinux) y fallback systemd.

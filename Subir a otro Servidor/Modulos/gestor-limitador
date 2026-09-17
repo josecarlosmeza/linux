@@ -21,10 +21,15 @@ _redlibre_rt_running() {
 
 _redlibre_rt_status() {
     if _redlibre_rt_running; then
-        local sec
+        local sec how
         sec=$(grep -E '^SLEEP_TIME=' "$CONF_FILE" 2>/dev/null | head -1 | cut -d= -f2)
         sec="${sec:-10}"
-        printf '%s' "ACTIVO (screen · corte cada ${sec}s)"
+        if systemctl is-active --quiet redlibre-limiter.service 2>/dev/null; then
+            how="systemd"
+        else
+            how="screen"
+        fi
+        printf '%s' "ACTIVO (${how} · corte cada ${sec}s)"
     else
         printf '%s' "INACTIVO"
     fi
@@ -152,6 +157,9 @@ _redlibre_pam_remove() {
 }
 
 _redlibre_rt_stop() {
+    _redlibre_screen_prepare
+    systemctl disable --now redlibre-limiter.service 2>/dev/null || true
+    systemctl stop redlibre-limiter.service 2>/dev/null || true
     screen -S limiter -X quit 2>/dev/null
     screen -wipe 1>/dev/null 2>&1
     pkill -x limiter 2>/dev/null || true
@@ -162,23 +170,83 @@ _redlibre_rt_stop() {
     fi
 }
 
+# GNU Screen en Alma/RHEL exige /run/screen en modo 775 (no 777).
 _redlibre_screen_prepare() {
-    mkdir -p /run/screen 2>/dev/null || true
-    chmod 777 /run/screen 2>/dev/null || true
+    if ! command -v screen >/dev/null 2>&1; then
+        if command -v dnf >/dev/null 2>&1; then
+            dnf install -y screen >/dev/null 2>&1 || true
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y screen >/dev/null 2>&1 || true
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y screen >/dev/null 2>&1 || true
+        fi
+    fi
+    getent group screen >/dev/null 2>&1 || groupadd -r screen 2>/dev/null || true
+    mkdir -p /run/screen /var/run/screen 2>/dev/null || true
+    chown root:screen /run/screen 2>/dev/null || chown root:root /run/screen 2>/dev/null || true
+    chmod 775 /run/screen 2>/dev/null || true
+    if [[ -d /var/run/screen && ! -L /var/run/screen ]]; then
+        chown root:screen /var/run/screen 2>/dev/null || true
+        chmod 775 /var/run/screen 2>/dev/null || true
+    fi
+    if [[ ! -f /etc/tmpfiles.d/redlibre-screen.conf ]]; then
+        echo 'd /run/screen 0775 root screen -' >/etc/tmpfiles.d/redlibre-screen.conf 2>/dev/null || true
+    fi
+    command -v systemd-tmpfiles >/dev/null 2>&1 && systemd-tmpfiles --create /etc/tmpfiles.d/redlibre-screen.conf >/dev/null 2>&1 || true
+    command -v restorecon >/dev/null 2>&1 && restorecon -RF /run/screen >/dev/null 2>&1 || true
+}
+
+_redlibre_limiter_bin() {
+    if [[ -x /bin/limiter ]]; then
+        echo /bin/limiter
+    elif command -v limiter >/dev/null 2>&1; then
+        command -v limiter
+    else
+        echo /bin/limiter
+    fi
+}
+
+_redlibre_rt_start_systemd() {
+    local bin
+    bin=$(_redlibre_limiter_bin)
+    [[ -x "$bin" ]] || return 1
+    cat >/etc/systemd/system/redlibre-limiter.service <<EOF
+[Unit]
+Description=RedLibre session limiter (tiempo real)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$bin
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable redlibre-limiter.service >/dev/null 2>&1 || true
+    systemctl restart redlibre-limiter.service
+    sleep 1
+    systemctl is-active --quiet redlibre-limiter.service
 }
 
 _redlibre_rt_start() {
+    local bin
+    bin=$(_redlibre_limiter_bin)
     _redlibre_screen_prepare
-    # Reiniciar si ya corre (para aplicar nuevo SLEEP_TIME)
     if _redlibre_rt_running; then
         pkill -x limiter 2>/dev/null || true
         screen -S limiter -X quit 2>/dev/null
+        systemctl stop redlibre-limiter.service 2>/dev/null || true
         sleep 1
     fi
-    if [[ -x /bin/limiter ]]; then
-        screen -dmS limiter /bin/limiter 2>/dev/null
-    else
-        screen -dmS limiter limiter 2>/dev/null
+    if command -v screen >/dev/null 2>&1 && [[ -x "$bin" ]]; then
+        screen -dmS limiter "$bin" 2>/dev/null || true
+        sleep 1
+    fi
+    if ! _redlibre_rt_running && command -v systemctl >/dev/null 2>&1; then
+        _redlibre_rt_start_systemd || true
     fi
     sleep 1
     if [[ ! -f /etc/autostart ]]; then
@@ -189,10 +257,8 @@ _redlibre_rt_start() {
         } >/etc/autostart
         chmod +x /etc/autostart 2>/dev/null || true
     fi
-    local _autoline
-    _autoline="pgrep -x limiter >/dev/null 2>&1 || screen -dmS limiter /bin/limiter"
     sed -i '/limiter/d' /etc/autostart 2>/dev/null || true
-    echo "$_autoline" >>/etc/autostart
+    echo "pgrep -x limiter >/dev/null 2>&1 || systemctl start redlibre-limiter.service 2>/dev/null || (mkdir -p /run/screen; chmod 775 /run/screen; screen -dmS limiter /bin/limiter)" >>/etc/autostart
 }
 
 _redlibre_is_rhel_like() {
@@ -245,9 +311,11 @@ _redlibre_verify() {
         echo -e "\033[1;31m→ no hay proceso «limiter»\033[0m"
     fi
     echo ""
-    echo -e "\033[1;33m# 2) Sesión screen\033[0m"
+    echo -e "\033[1;33m# 2) Sesión screen / unidad systemd\033[0m"
     echo -e "\033[1;37m\$ screen -ls | grep -i limiter\033[0m"
-    screen -ls 2>/dev/null | grep -i limiter || echo -e "\033[1;31m→ sin sesión screen «limiter»\033[0m"
+    screen -ls 2>/dev/null | grep -i limiter || echo -e "\033[1;33m→ sin sesión screen «limiter» (puede estar en systemd)\033[0m"
+    echo -e "\033[1;37m\$ systemctl is-active redlibre-limiter.service\033[0m"
+    systemctl is-active redlibre-limiter.service 2>/dev/null || echo "inactive/missing"
     echo ""
     echo -e "\033[1;33m# 3) Autostart\033[0m"
     echo -e "\033[1;37m\$ grep limiter /etc/autostart\033[0m"
@@ -376,7 +444,9 @@ while true; do
             echo -e "  PAM:         $(_redlibre_pam_status)"
             echo -e "  Tiempo real: $(_redlibre_rt_status)"
             if ! _redlibre_rt_running; then
-                echo -e "\033[1;31mEl screen limiter no quedó activo.\033[0m"
+                echo -e "\033[1;31mEl limiter en tiempo real no quedó activo.\033[0m"
+                echo -e "\033[1;33mPruebe: dnf install -y screen && chmod 775 /run/screen\033[0m"
+                echo -e "\033[1;33mo: systemctl status redlibre-limiter.service --no-pager\033[0m"
             fi
             echo -ne "\033[1;33m[ENTER]\033[0m "
             read -r
