@@ -61,6 +61,7 @@ else
 		grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 		rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
 		rm -f /etc/RedLibre/vence/$user 2>/dev/null
+		[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-del "$user" >/dev/null 2>&1 || true
 		if [[ -e /etc/openvpn/server.conf ]]; then
 			remove_ovp $user
 		fi
@@ -74,6 +75,7 @@ else
 			grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 			rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
 			rm -f /etc/RedLibre/vence/$user 2>/dev/null
+		[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-del "$user" >/dev/null 2>&1 || true
 			if [[ -e /etc/openvpn/server.conf ]]; then
 				remove_ovp $user
 		    fi
@@ -87,6 +89,7 @@ else
 			grep -v ^$user[[:space:]] /root/usuarios.db > /tmp/ph ; cat /tmp/ph > /root/usuarios.db
 			rm /etc/RedLibre/senha/$user 1>/dev/null 2>/dev/null
 			rm -f /etc/RedLibre/vence/$user 2>/dev/null
+		[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-del "$user" >/dev/null 2>&1 || true
 			if [[ -e /etc/openvpn/server.conf ]]; then
 				remove_ovp $user
 		    fi
@@ -107,6 +110,7 @@ elif [[ "$resp" = "2" ]]; then
 			pkill -f $user > /dev/null 2>&1
 			userdel --force $user > /dev/null 2>&1
 			rm -f /etc/RedLibre/senha/$user /etc/RedLibre/vence/$user 2>/dev/null
+			[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-del "$user" >/dev/null 2>&1 || true
         if [[ -e /etc/openvpn/server.conf ]]; then
 		   remove_ovp $user
 		fi

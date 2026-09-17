@@ -157,7 +157,13 @@ tc_apply() {
 	_ensure_tools || return 1
 	_load_conf || { echo -e "\033[1;31mNo hay configuración. Use la opción de configurar primero.\033[0m"; return 1; }
 	tc_remove_all "$DEV" 2>/dev/null
-	[[ "$UP_MBIT" =~ ^[0-9]+$ ]] && [[ "$UP_MBIT" -ge 1 ]] && _apply_egress "$DEV" "$UP_MBIT"
+	if [[ -f /etc/RedLibre/banda/enabled ]] && [[ -x /bin/gestor-banda-user ]]; then
+		# El gestor por usuario posee el HTB de salida (tope = UP_MBIT)
+		/bin/gestor-banda-user apply >/dev/null 2>&1 || true
+		echo -e "\033[1;37m(Límite por usuario reaplicado en la salida.)\033[0m"
+	else
+		[[ "$UP_MBIT" =~ ^[0-9]+$ ]] && [[ "$UP_MBIT" -ge 1 ]] && _apply_egress "$DEV" "$UP_MBIT"
+	fi
 	[[ "$DOWN_MBIT" =~ ^[0-9]+$ ]] && [[ "$DOWN_MBIT" -ge 1 ]] && _apply_ingress "$DEV" "$DOWN_MBIT"
 	echo -e "\033[1;32mLímites aplicados en \033[1;37m$DEV\033[0m (subida ${UP_MBIT} Mbit/s, bajada ${DOWN_MBIT} Mbit/s)."
 	return 0
@@ -288,6 +294,7 @@ menu_loop() {
 		echo -e " \033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Desactivar bloqueo ligero P2P"
 		echo -e " \033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Ver estado (tc + reglas)"
 		echo -e " \033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Persistir límites tras reinicio (systemd)"
+		echo -e " \033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Ancho de banda \033[1;37mpor usuario\033[1;33m (máx / sostenida / penalización)"
 		echo -e " \033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver"
 		echo ""
 		read -p "$(echo -e "\033[1;32mOpción: \033[1;37m") " op
@@ -310,7 +317,12 @@ menu_loop() {
 			_load_conf 2>/dev/null
 			tc_remove_all "${DEV:-$(_detect_dev)}"
 			systemctl disable redlibre-bw-restore.service 2>/dev/null
-			echo -e "\033[1;32mLímites tc eliminados.\033[0m"
+			if [[ -f /etc/RedLibre/banda/enabled ]] && [[ -x /bin/gestor-banda-user ]]; then
+				/bin/gestor-banda-user apply >/dev/null 2>&1 || true
+				echo -e "\033[1;32mLímite global quitado; se mantienen los límites por usuario.\033[0m"
+			else
+				echo -e "\033[1;32mLímites tc eliminados.\033[0m"
+			fi
 			sleep 2
 			;;
 		3)
@@ -334,6 +346,14 @@ menu_loop() {
 				echo -e "\033[1;31mPrimero configure límites (opción 1).\033[0m"
 			fi
 			sleep 2
+			;;
+		7)
+			if [[ -x /bin/gestor-banda-user ]]; then
+				gestor-banda-user
+			else
+				echo -e "\033[1;31mFalta /bin/gestor-banda-user. Actualice el script.\033[0m"
+				sleep 2
+			fi
 			;;
 		0|"")
 			break

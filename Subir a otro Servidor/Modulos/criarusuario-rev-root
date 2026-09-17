@@ -283,6 +283,7 @@ fi
 echo "$password" > "/etc/RedLibre/senha/$username"
 echo "$username $sshlimiter" >> /root/usuarios.db
 redlibre_rev_register_user "$username"
+[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-add "$username" >/dev/null 2>&1 || true
 
 # --- RESULTADOS (mismo bloque que criarusuario administrador) ---
 clear

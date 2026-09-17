@@ -1,2 +1,1 @@
-1.0.0.54
-fix limitador screen: /run/screen modo 775 (AlmaLinux) y fallback systemd.
+1.0.0.55

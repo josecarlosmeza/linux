@@ -70,6 +70,7 @@ _cleanup_markers() {
     rm -f "/etc/RedLibre/vence/$user"
     rm -f "/etc/RedLibre/userteste/${user}.sh" 2>/dev/null
     redlibre_rev_unregister_user "$user"
+    [[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-del "$user" >/dev/null 2>&1 || true
 }
 
 if id "$user" &>/dev/null; then
