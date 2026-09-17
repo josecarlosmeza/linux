@@ -1,2 +1,2 @@
-1.0.0.49
-backup admin/bot incluye revendedores (conf, clientes, sudo, sshd) y los reactiva al restaurar.
+1.0.0.50
+backup omite usuarios de prueba (userteste); no se restauran como cuentas permanentes.

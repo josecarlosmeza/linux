@@ -81,6 +81,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     if ((${#ALLOW[@]} > 0)) && [[ "${ALLOW[$u]:-}" != "1" ]]; then
         continue
     fi
+    if [[ -f "/etc/RedLibre/userteste/${u}.sh" ]]; then
+        echo "(Aviso) Usuario de prueba omitido: $u" >&2
+        continue
+    fi
 
     _sp_line=$(awk -F: -v "name=$u" '$1==name {print; exit}' "$SHADOW" || true)
     [[ -n "$_sp_line" ]] || { echo "(Aviso) Sin entrada en shadow: $u — omitido." >&2; continue; }

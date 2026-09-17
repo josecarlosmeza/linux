@@ -890,13 +890,11 @@ backup_users() {
     rm /root/backup.vps 1>/dev/null 2>/dev/null
     ShellBot.answerCallbackQuery --callback_query_id ${callback_query_id[$id]} \
         --text "♻️ CRIANDO BACKUP DE USUARIOS"
-    _rev_extra=""
-    [[ -d /etc/RedLibre/senha ]] && _rev_extra="$_rev_extra /etc/RedLibre/senha"
-    [[ -d /etc/RedLibre/vence ]] && _rev_extra="$_rev_extra /etc/RedLibre/vence"
-    [[ -d /etc/RedLibre/revendedores ]] && _rev_extra="$_rev_extra /etc/RedLibre/revendedores"
-    [[ -f /etc/sudoers.d/redlibre-revendedores ]] && _rev_extra="$_rev_extra /etc/sudoers.d/redlibre-revendedores"
-    [[ -f /etc/ssh/sshd_config.d/50-redlibre-revendedores.conf ]] && _rev_extra="$_rev_extra /etc/ssh/sshd_config.d/50-redlibre-revendedores.conf"
-    tar cvf /root/backup.vps /root/usuarios.db /etc/shadow /etc/passwd /etc/group /etc/gshadow /etc/bot $_rev_extra 1>/dev/null 2>/dev/null
+    if [[ -x /bin/userbackup ]]; then
+        /bin/userbackup botfile 1>/dev/null 2>/dev/null
+    else
+        tar cvf /root/backup.vps /root/usuarios.db /etc/shadow /etc/passwd /etc/group /etc/gshadow /etc/bot 1>/dev/null 2>/dev/null
+    fi
     ShellBot.sendDocument --chat_id ${id_admin} \
         --document "@/root/backup.vps" \
         --caption "$(echo -e "♻️ BACKUP DE USUARIOS ♻️")"
