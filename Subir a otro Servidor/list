@@ -57,6 +57,16 @@ for _arq in ${_mdls[@]}; do
 		chmod +x "$_dir1/$_arq"
 	fi
 done
+mkdir -p /opt/udppy
+for _udpf in udppy_server.py udppy_proto.py linux_tune.py; do
+	wget -qO "/opt/udppy/$_udpf" "https://github.com/josecarlosmeza/linux/raw/main/udppy/$_udpf" 2>/dev/null || true
+	sed -i 's/\r$//' "/opt/udppy/$_udpf" 2>/dev/null || true
+	chmod 755 "/opt/udppy/$_udpf" 2>/dev/null || true
+done
+# Retirar el motor anterior (udp-py)
+systemctl disable --now udpgw-py 2>/dev/null || true
+rm -rf /opt/udp-py /etc/systemd/system/udpgw-py.service 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
 [[ -x /bin/revendedor-sshd-lock ]] && /bin/revendedor-sshd-lock 2>/dev/null || true
 mv $_dir1/cabecalho $_dir1/bot $_dir1/open.py $_dir1/proxy.py $_dir2
 _arq_host="/etc/hosts"

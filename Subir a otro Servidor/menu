@@ -281,7 +281,7 @@ esac
 while true $x != "ok"
 do
 stsl=$(ps x | grep "limiter"|grep -v grep > /dev/null && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
-if (command -v systemctl &>/dev/null && systemctl is-active --quiet badvpn-udpgw 2>/dev/null) || (ps x | grep -E "udpvpn|badvpn-udpgw" | grep -v grep >/dev/null); then stsu=$(echo -e "\033[1;32m[*]\033[0m"); else stsu=$(echo -e "\033[1;31m[ ]\033[0m"); fi
+if (command -v systemctl &>/dev/null && (systemctl is-active --quiet udppy-server 2>/dev/null || systemctl is-active --quiet badvpn-udpgw 2>/dev/null)) || (ps x | grep -E "udppy_server.py|udpvpn|badvpn-udpgw" | grep -v grep >/dev/null); then stsu=$(echo -e "\033[1;32m[*]\033[0m"); else stsu=$(echo -e "\033[1;31m[ ]\033[0m"); fi
 if [[ -f /etc/redhat-release ]] && grep -qiE 'almalinux|rocky|rhel' /etc/redhat-release 2>/dev/null; then
 system=$(sed 's/ release.*//' /etc/redhat-release | head -1)
 system+=$(echo ' ')
@@ -420,9 +420,7 @@ case "$x" in
    gestor-limitador
    ;;
    17)
-   clear
    badvpn
-   exit;
    ;;
    18)
    clear

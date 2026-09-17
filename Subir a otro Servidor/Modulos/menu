@@ -368,9 +368,9 @@ while true $x != "ok"
 do
 stsl=$(pgrep -x limiter >/dev/null 2>&1 && echo -e "\033[1;32m[*]\033[0m" || echo -e "\033[1;31m[ ]\033[0m")
 # BADVPN / UDPGW: systemctl primero; pgrep solo si hace falta
-if command -v systemctl &>/dev/null && (systemctl is-active --quiet badvpn-udpgw 2>/dev/null || systemctl is-active --quiet udpgw-py 2>/dev/null); then
+if command -v systemctl &>/dev/null && (systemctl is-active --quiet udppy-server 2>/dev/null || systemctl is-active --quiet badvpn-udpgw 2>/dev/null); then
     stsu=$(echo -e "\033[1;32m[*]\033[0m")
-elif pgrep -f 'badvpn-udpgw' >/dev/null 2>&1 || pgrep -f 'udpvpn' >/dev/null 2>&1 || pgrep -f 'udpgw_server.py' >/dev/null 2>&1; then
+elif pgrep -f 'udppy_server.py' >/dev/null 2>&1 || pgrep -f 'badvpn-udpgw' >/dev/null 2>&1 || pgrep -f 'udpvpn' >/dev/null 2>&1; then
     stsu=$(echo -e "\033[1;32m[*]\033[0m")
 else
     stsu=$(echo -e "\033[1;31m[ ]\033[0m")
@@ -492,9 +492,7 @@ case "$x" in
    gestor-limitador
    ;;
    17)
-   clear
    badvpn
-   exit;
    ;;
    18)
    clear

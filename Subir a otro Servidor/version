@@ -1,2 +1,2 @@
-1.0.0.50
-backup omite usuarios de prueba (userteste); no se restauran como cuentas permanentes.
+1.0.0.53
+opción 17: gestor udppy (escucha, DNS, MTU, conexiones, backlog, verbose, uvloop).
