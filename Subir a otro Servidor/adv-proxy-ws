@@ -366,15 +366,25 @@ def is_ws_vless_path(buf: bytes) -> bool:
         if method not in ("GET", "CONNECT", "POST", "HEAD"):
             return False
         path = parts[1].split("?", 1)[0]
-        return b"vless" in path.lower()
+        return "vless" in path.lower()
     except Exception:
         return False
 
 
 def needs_local_http_handshake_for_ssh(buf: bytes) -> bool:
+    """HTTP Custom / CDN: responder 200/101 al cliente; no reenviar el GET a Dropbear."""
     if b"\r\n\r\n" not in buf:
         return False
-    return is_connect_method(buf) or is_upgrade_websocket(buf)
+    if is_connect_method(buf) or is_upgrade_websocket(buf):
+        return True
+    fl = first_line(buf).lstrip().upper()
+    return (
+        fl.startswith(b"GET ")
+        or fl.startswith(b"POST ")
+        or fl.startswith(b"HEAD ")
+        or fl.startswith(b"PUT ")
+        or fl.startswith(b"OPTIONS ")
+    )
 
 
 def http_body_tail(buf: bytes) -> bytes:
@@ -552,25 +562,55 @@ def classify(buf: bytes) -> Optional[str]:
     return None
 
 
+def looks_cdn_origin(buf: bytes) -> bool:
+    """CloudFront/Cloudflare hacia el origen: no pipelinean el 2.º HTTP Custom."""
+    if not buf:
+        return False
+    low = buf.lower()
+    if b"x-amz-cf-id:" in low or b"x-amz-cf-pop:" in low:
+        return True
+    if b"cf-ray:" in low:
+        return True
+    if b"via:" in low and b"cloudfront" in low:
+        return True
+    return False
+
+
+def remainder_looks_binary_tunnel(rem: bytes) -> bool:
+    """Cuerpo tras headers ya es SSH/TLS: no esperar otra petición HTTP."""
+    s = rem.lstrip()
+    if not s:
+        return False
+    return s.startswith(b"SSH-") or looks_tls(s)
+
+
 def pipeline_awaiting_more(buf: bytes) -> bool:
-    """HTTP Custom [split]: no cerrar peek en GET / o REDLIBRE si puede venir el WS después."""
+    """Espera otro HTTP solo si parece la 1.ª mitad de un [split] incompleto.
+
+    Un GET /REDLIBRE (o WS/CONNECT) ya completo no debe bloquear 5 s: CloudFront
+    y HTTP Custom cortan si el origen no responde. El CDN nunca manda el 2.º
+    request hasta que el origen contesta el primero.
+    """
     if has_vless_ws_in_buf(buf):
+        return False
+    if looks_cdn_origin(buf):
         return False
     messages, remainder = split_http_messages(buf)
     if remainder:
+        if remainder_looks_binary_tunnel(remainder):
+            return False
         return True
     if not messages:
         return False
+    # Túnel ya negociado en este request: responder ya (SSH-HTTP).
     for msg in messages:
-        if is_upgrade_websocket(msg):
-            # WS sin vless en path (/REDLIBRE…): puede seguir el bloque VLESS real.
-            if is_vless_ws_message(msg):
-                return False
-            return True
+        if is_connect_method(msg) or is_upgrade_websocket(msg):
+            return False
+    # GET/HEAD probe sin Upgrade: puede llegar el WS VLESS en el mismo TCP.
     return True
 
 
-PIPELINE_PEEK_TIMEOUT = 5.0
+PIPELINE_PEEK_TIMEOUT = 0.6
 DEFAULT_PEEK_TIMEOUT = 2.0
 
 
@@ -617,14 +657,16 @@ async def peek_loop(reader: asyncio.StreamReader) -> Tuple[bytes, str]:
         return buf, "tls"
     if pipeline_awaiting_more(buf):
         msgs, rem = split_http_messages(buf)
-        paths = []
-        for m in msgs[:4]:
-            p = ws_request_path(m).decode("latin-1", "replace") or "?"
-            paths.append(p)
-        log(
-            "peer peek incompleto (%d B, %d msg, paths=%s, rem=%d B) — esperaba más pipelining HTTP"
-            % (len(buf), len(msgs), ",".join(paths), len(rem))
-        )
+        # 1 GET completo sin resto = SSH-HTTP normal (CDN/payload), no un split a medias.
+        if rem or len(msgs) != 1:
+            paths = []
+            for m in msgs[:4]:
+                p = ws_request_path(m).decode("latin-1", "replace") or "?"
+                paths.append(p)
+            log(
+                "peer peek incompleto (%d B, %d msg, paths=%s, rem=%d B) — esperaba más pipelining HTTP"
+                % (len(buf), len(msgs), ",".join(paths), len(rem))
+            )
     return buf, "ssh"
 
 
