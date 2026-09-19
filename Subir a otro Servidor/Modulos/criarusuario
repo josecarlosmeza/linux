@@ -64,7 +64,13 @@ fi
 # Registro interno
 echo "$password" > "/etc/RedLibre/senha/$username"
 echo "$username $sshlimiter" >> /root/usuarios.db
-[[ -x /bin/gestor-banda-user ]] && /bin/gestor-banda-user hook-add "$username" >/dev/null 2>&1 || true
+if [[ -x /bin/gestor-banda-user ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 8 /bin/gestor-banda-user hook-add "$username" >/dev/null 2>&1 || true
+    else
+        /bin/gestor-banda-user hook-add "$username" >/dev/null 2>&1 || true
+    fi
+fi
 
 # --- RESULTADOS (UNA LÍNEA POR DATO) ---
 clear

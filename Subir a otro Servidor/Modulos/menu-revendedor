@@ -52,7 +52,21 @@ while true; do
         [[ "${_mxu:-0}" -gt 0 ]] && [[ "$_mxu" -lt "$_ps_eff" ]] && _ps_eff="$_mxu"
         echo -e "\033[1;36m Usuario prueba — tope elegible: \033[1;37m$_pm\033[0m min, hasta \033[1;37m$_ps_eff\033[0m sesión(es)"
         [[ "${_mxu:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope sesiones/usuario: \033[1;37m$_mxu\033[0m"
-        [[ "${_mxt:-0}" -gt 0 ]] && echo -e "\033[1;36m Tope total sesiones (sus clientes): \033[1;37m$_mxt\033[0m"
+        if [[ "${_mxt:-0}" -gt 0 ]]; then
+            _ses_used=0
+            shopt -s nullglob
+            for _sf in "/etc/RedLibre/revendedores/$_RL_USER/usuarios/"*; do
+                [[ -f "$_sf" ]] || continue
+                _sv=$(grep -E '^SESIONES=' "$_sf" 2>/dev/null | head -1 | cut -d= -f2)
+                _sv="${_sv//[^0-9]/}"
+                [[ -z "$_sv" || "$_sv" -lt 1 ]] && _sv=1
+                _ses_used=$((_ses_used + _sv))
+            done
+            shopt -u nullglob
+            _ses_left=$((_mxt - _ses_used))
+            [[ "$_ses_left" -lt 0 ]] && _ses_left=0
+            echo -e "\033[1;36m Sesiones asignadas: \033[1;37m$_ses_used / $_mxt\033[0m \033[1;36m(quedan \033[1;33m$_ses_left\033[1;36m)\033[0m"
+        fi
         _ff=$(grep -E '^FECHA_FIN_REVENDEDOR=' "$_limf" | head -1 | cut -d= -f2-)
         _ff="${_ff//$'\r'/}"
         _ff="${_ff//[[:space:]]/}"

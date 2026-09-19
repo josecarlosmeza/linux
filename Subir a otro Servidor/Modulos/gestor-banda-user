@@ -331,13 +331,22 @@ banda_watch() {
 }
 
 hook_add() {
-	local u="$1"
+	local u="$1" dev uid
 	[[ -n "$u" ]] || return 0
 	[[ -f "$DEF" ]] || return 0
 	[[ -f "$FLAG" ]] || return 0
+	id "$u" &>/dev/null || return 0
 	_load_default
 	_save_user "$u"
-	banda_apply >/dev/null 2>&1 || true
+	# Incremental: no reconstruir todo el HTB (tc qdisc del / dnf pueden colgar el alta de usuarios).
+	dev=$(_detect_dev)
+	uid=$(_user_uid "$u")
+	[[ -n "$dev" && -n "$uid" ]] || return 0
+	_mangle_init
+	iptables -w -t mangle -C "$CHAIN" -m owner --uid-owner "$u" -j MARK --set-mark "$uid" 2>/dev/null \
+		|| iptables -w -t mangle -A "$CHAIN" -m owner --uid-owner "$u" -m comment --comment "rlbw:$u" -j MARK --set-mark "$uid" 2>/dev/null || true
+	_apply_class "$dev" "$u" 2>/dev/null || true
+	return 0
 }
 
 hook_del() {
@@ -481,7 +490,9 @@ _do_del_user() {
 }
 
 # CLI
-case "${1:-}" in
+_cmd="${1-}"
+_cmd="${_cmd//$'\r'/}"
+case "$_cmd" in
 	apply | restore)
 		banda_apply
 		exit $?
@@ -491,16 +502,22 @@ case "${1:-}" in
 		exit 0
 		;;
 	hook-add)
-		hook_add "${2:-}"
+		hook_add "${2-}"
 		exit 0
 		;;
 	hook-del)
-		hook_del "${2:-}"
+		hook_del "${2-}"
 		exit 0
 		;;
 	stop)
 		_stop_watch
 		banda_remove_all
+		exit 0
+		;;
+	"")
+		;;
+	*)
+		# Nunca abrir el menú interactivo si nos llamaron con un subcomando (p. ej. desde criarusuario).
 		exit 0
 		;;
 esac

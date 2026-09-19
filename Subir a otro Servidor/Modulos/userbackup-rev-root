@@ -18,9 +18,12 @@ if ! declare -F redlibre_rev_valid_login_name >/dev/null 2>&1; then
 fi
 if ! declare -F redlibre_rev_register_user >/dev/null 2>&1; then
     redlibre_rev_register_user() {
-        local u="$1"
+        local u="$1" ses="${2:-1}"
         mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
-        : >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+        ses="${ses//[^0-9]/}"
+        [[ -z "$ses" || "$ses" -lt 1 ]] && ses=1
+        printf 'SESIONES=%s\n' "$ses" >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+        chmod 644 "/etc/RedLibre/revendedores/$REV/usuarios/$u" 2>/dev/null || true
     }
 fi
 if ! declare -F redlibre_rev_set_password_plain >/dev/null 2>&1; then
@@ -332,7 +335,7 @@ _import_rev() {
         cat "$_udb_tmp" >"$DB_MAIN"
         rm -f "$_udb_tmp"
         echo "$u $lim" >>"$DB_MAIN"
-        redlibre_rev_register_user "$u"
+        redlibre_rev_register_user "$u" "$lim"
         echo -e "\033[1;32mOK:\033[0m $u"
     done <"$tmp/usuarios.db"
 

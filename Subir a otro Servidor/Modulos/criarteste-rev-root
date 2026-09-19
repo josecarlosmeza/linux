@@ -61,27 +61,30 @@ if ! declare -F redlibre_rev_valid_login_name >/dev/null 2>&1; then
 fi
 if ! declare -F redlibre_rev_register_user >/dev/null 2>&1; then
     redlibre_rev_register_user() {
-        local u="$1"
+        local u="$1" ses="${2:-1}"
         mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
-        : >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+        ses="${ses//[^0-9]/}"
+        [[ -z "$ses" || "$ses" -lt 1 ]] && ses=1
+        printf 'SESIONES=%s\n' "$ses" >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+        chmod 644 "/etc/RedLibre/revendedores/$REV/usuarios/$u" 2>/dev/null || true
     }
 fi
 if ! declare -F redlibre_rev_set_password_plain >/dev/null 2>&1; then
     redlibre_rev_set_password_plain() {
-        local u="$1" p="$2" h
+        local u="$1" p="$2" h=""
         [[ -n "$u" && -n "$p" ]] || return 1
         id "$u" &>/dev/null || return 1
-        if printf '%s\n' "${u}:${p}" | chpasswd 2>/dev/null; then
+        if command -v openssl >/dev/null 2>&1; then
+            h=$(printf '%s' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
+        fi
+        if [[ -z "$h" ]] && command -v perl >/dev/null 2>&1; then
+            h=$(perl -e 'print crypt($ARGV[0], "password")' "$p" 2>/dev/null) || h=""
+        fi
+        if [[ -n "$h" ]] && usermod -p "$h" "$u" >/dev/null 2>&1; then
             return 0
         fi
-        if command -v openssl >/dev/null 2>&1; then
-            h=$(printf '%s\n' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
-            if [[ -z "$h" ]]; then
-                h=$(openssl passwd -6 "$p" 2>/dev/null) || h=""
-            fi
-            if [[ -n "$h" ]] && usermod -p "$h" "$u" 2>/dev/null; then
-                return 0
-            fi
+        if command -v setsid >/dev/null 2>&1; then
+            printf '%s\n' "${u}:${p}" | setsid chpasswd >/dev/null 2>&1 && return 0
         fi
         return 1
     }
@@ -134,6 +137,22 @@ _cap_u="${_cap_u//[[:space:]]/}"
 _max_ses_eff="$_max_ses_prueba"
 if [[ "$_cap_u" -gt 0 ]] && [[ "$_max_ses_eff" -gt "$_cap_u" ]]; then
     _max_ses_eff="$_cap_u"
+fi
+_ses_rest=""
+if declare -F redlibre_rev_sesiones_restantes >/dev/null 2>&1; then
+    _ses_rest=$(redlibre_rev_sesiones_restantes)
+    _ses_rest="${_ses_rest//[^0-9]/}"
+fi
+if [[ -n "$_ses_rest" ]]; then
+    if [[ "$_ses_rest" -lt 1 ]]; then
+        echo -e "\n\033[41;1;37m Cupo global de sesiones agotado. No puede crear usuarios de prueba. \033[0m\n"
+        echo -ne "\033[1;33mPulse [ENTER] para volver al menú...\033[0m"
+        if [[ -r /dev/tty ]]; then read -r < /dev/tty; else read -r; fi
+        exit 1
+    fi
+    if [[ "$_max_ses_eff" -gt "$_ses_rest" ]]; then
+        _max_ses_eff="$_ses_rest"
+    fi
 fi
 [[ "$_max_ses_eff" -lt 1 ]] && _max_ses_eff=1
 
@@ -245,9 +264,19 @@ limit=$(_redlibre_strip_input "$limit")
 if ! [[ "$limit" =~ ^[0-9]+$ ]] || [[ "$limit" -lt 1 ]] || [[ "$limit" -gt "$_max_ses_eff" ]]; then
     error_exit "Sesiones inválidas: use un entero entre 1 y $_max_ses_eff."
 fi
+if [[ -n "$_ses_rest" ]] && [[ "$limit" -gt "$_ses_rest" ]]; then
+    echo -e "\033[1;33mCupo global: este usuario de prueba queda en $_ses_rest sesión(es).\033[0m"
+    limit="$_ses_rest"
+fi
 
-if ! useradd -M -s "$NOLOGIN_SHELL" "$nome"; then
-    error_exit "No se pudo crear el usuario."
+echo -e "\033[1;33mCreando usuario de prueba, espere...\033[0m"
+_UA="/usr/sbin/useradd"
+[[ -x "$_UA" ]] || _UA="$(command -v useradd 2>/dev/null || true)"
+[[ -n "$_UA" ]] || error_exit "No se encontró useradd."
+if command -v timeout >/dev/null 2>&1; then
+    timeout 25 "$_UA" -M -N -s "$NOLOGIN_SHELL" "$nome" </dev/null >/dev/null 2>&1 || error_exit "No se pudo crear el usuario (useradd)."
+else
+    "$_UA" -M -N -s "$NOLOGIN_SHELL" "$nome" </dev/null >/dev/null 2>&1 || error_exit "No se pudo crear el usuario."
 fi
 
 if ! redlibre_rev_set_password_plain "$nome" "$pass"; then
@@ -255,7 +284,7 @@ if ! redlibre_rev_set_password_plain "$nome" "$pass"; then
 fi
 echo "$pass" >"$PASS_DIR/$nome"
 echo "$nome $limit" >>"$DB_FILE"
-redlibre_rev_register_user "$nome"
+redlibre_rev_register_user "$nome" "$limit"
 
 DELETE_SCRIPT="$TEST_DIR/${nome}.sh"
 

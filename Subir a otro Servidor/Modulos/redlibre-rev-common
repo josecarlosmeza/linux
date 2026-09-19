@@ -69,23 +69,24 @@ redlibre_rev_count_owned() {
     echo "$n"
 }
 
-# Contraseña en claro → shadow. chpasswd primero; si PAM/pwquality lo rechaza, hash SHA-512 con openssl + usermod.
+# Contraseña en claro → shadow, sin TTY (PAM/pwquality no puede preguntar y dejar el alta colgada).
 redlibre_rev_set_password_plain() {
-    local u="$1" p="$2" h
+    local u="$1" p="$2" h=""
     [[ -n "$u" && -n "$p" ]] || return 1
     id "$u" &>/dev/null || return 1
-    if printf '%s\n' "${u}:${p}" | chpasswd 2>/dev/null; then
+    if command -v openssl >/dev/null 2>&1; then
+        h=$(printf '%s' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
+    fi
+    if [[ -z "$h" ]] && command -v perl >/dev/null 2>&1; then
+        h=$(perl -e 'print crypt($ARGV[0], "password")' "$p" 2>/dev/null) || h=""
+    fi
+    if [[ -n "$h" ]] && usermod -p "$h" "$u" >/dev/null 2>&1; then
         return 0
     fi
-    if command -v openssl >/dev/null 2>&1; then
-        h=$(printf '%s\n' "$p" | openssl passwd -6 -stdin 2>/dev/null) || h=""
-        if [[ -z "$h" ]]; then
-            h=$(openssl passwd -6 "$p" 2>/dev/null) || h=""
-        fi
-        if [[ -n "$h" ]] && usermod -p "$h" "$u" 2>/dev/null; then
-            return 0
-        fi
+    if command -v setsid >/dev/null 2>&1; then
+        printf '%s\n' "${u}:${p}" | setsid chpasswd >/dev/null 2>&1 && return 0
     fi
+    printf '%s\n' "${u}:${p}" | chpasswd >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -103,10 +104,18 @@ redlibre_rev_list_owned() {
 }
 
 redlibre_rev_register_user() {
-    local u
+    local u ses
     u="$1"
+    ses="${2:-}"
     mkdir -p "/etc/RedLibre/revendedores/$REV/usuarios"
-    : > "/etc/RedLibre/revendedores/$REV/usuarios/$u"
+    ses="${ses//[^0-9]/}"
+    if [[ -z "$ses" || "$ses" -lt 1 ]]; then
+        ses=$(redlibre_rev_owned_sesiones "$u" 2>/dev/null || echo 1)
+        ses="${ses//[^0-9]/}"
+        [[ -z "$ses" || "$ses" -lt 1 ]] && ses=1
+    fi
+    printf 'SESIONES=%s\n' "$ses" >"/etc/RedLibre/revendedores/$REV/usuarios/$u"
+    chmod 644 "/etc/RedLibre/revendedores/$REV/usuarios/$u" 2>/dev/null || true
 }
 
 redlibre_rev_unregister_user() {
@@ -143,6 +152,64 @@ redlibre_rev_max_sesiones_usuario() {
         v="0"
     fi
     echo "$v"
+}
+
+# Tope global de sesiones (suma de límites de todos sus clientes). 0 = sin tope.
+redlibre_rev_max_sesiones_total() {
+    local v raw
+    raw=$(redlibre_rev_conf_get "MAX_SESIONES_TOTAL_REVENDEDOR" "0")
+    v="${raw//[^0-9]/}"
+    [[ -z "$v" ]] && v="0"
+    echo "$v"
+}
+
+# Límite de sesiones de un cliente (usuarios.db si es root; si no, marca SESIONES=).
+redlibre_rev_owned_sesiones() {
+    local u="$1" lim="" f
+    [[ -n "$u" ]] || { echo 1; return 0; }
+    if [[ -r /root/usuarios.db ]]; then
+        lim=$(awk -v u="$u" '$1==u {print $2; exit}' /root/usuarios.db 2>/dev/null)
+    fi
+    lim="${lim//[^0-9]/}"
+    if [[ -z "$lim" ]]; then
+        f="/etc/RedLibre/revendedores/${REV:-}/usuarios/$u"
+        [[ -z "$REV" && -n "${_RL_USER:-}" ]] && f="/etc/RedLibre/revendedores/${_RL_USER}/usuarios/$u"
+        if [[ -f "$f" ]]; then
+            lim=$(grep -E '^SESIONES=' "$f" 2>/dev/null | head -1 | cut -d= -f2)
+            lim="${lim//[^0-9]/}"
+        fi
+    fi
+    [[ -z "$lim" || "$lim" -lt 1 ]] && lim=1
+    echo "$lim"
+}
+
+# Suma de sesiones ya asignadas. $1 = usuario a excluir (al editar su propio límite).
+redlibre_rev_sesiones_asignadas() {
+    local excl="${1:-}" u n=0 lim
+    while IFS= read -r u; do
+        [[ -z "$u" || "$u" == "$excl" ]] && continue
+        lim=$(redlibre_rev_owned_sesiones "$u")
+        lim="${lim//[^0-9]/}"
+        [[ -z "$lim" ]] && lim=1
+        n=$((n + lim))
+    done < <(redlibre_rev_list_owned)
+    echo "$n"
+}
+
+# Cupo que queda (vacío = sin tope global). $1 = usuario a excluir.
+redlibre_rev_sesiones_restantes() {
+    local excl="${1:-}" max used
+    max=$(redlibre_rev_max_sesiones_total)
+    max="${max//[^0-9]/}"
+    [[ -z "$max" || "$max" -eq 0 ]] && { echo ""; return 0; }
+    used=$(redlibre_rev_sesiones_asignadas "$excl")
+    used="${used//[^0-9]/}"
+    [[ -z "$used" ]] && used=0
+    if [[ "$used" -ge "$max" ]]; then
+        echo 0
+    else
+        echo $((max - used))
+    fi
 }
 
 redlibre_rev_prueba_minutos() {

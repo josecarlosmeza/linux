@@ -71,14 +71,37 @@ if ! [[ "$sshnum" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 _cap=$(redlibre_rev_max_sesiones_usuario)
+_cap="${_cap//[^0-9]/}"
+[[ -z "$_cap" ]] && _cap=0
 if [[ "$_cap" -gt 0 ]] && [[ "$sshnum" -gt "$_cap" ]]; then
-    echo -e "\n\033[1;31mEl administrador permite como máximo $_cap sesión(es) por usuario.\033[0m\n"
-    exit 1
+    echo -e "\n\033[1;33mTope por cliente: máx. $_cap. Se usa ese valor.\033[0m"
+    sshnum="$_cap"
+fi
+_mxt=$(redlibre_rev_max_sesiones_total 2>/dev/null || true)
+_mxt="${_mxt//[^0-9]/}"
+[[ -z "$_mxt" ]] && _mxt=$(redlibre_rev_conf_get "MAX_SESIONES_TOTAL_REVENDEDOR" "0")
+_mxt="${_mxt//[^0-9]/}"
+[[ -z "$_mxt" ]] && _mxt=0
+if [[ "$_mxt" -gt 0 ]] && declare -F redlibre_rev_sesiones_restantes >/dev/null 2>&1; then
+    _rest=$(redlibre_rev_sesiones_restantes "$usuario")
+    _rest="${_rest//[^0-9]/}"
+    [[ -z "$_rest" ]] && _rest=0
+    if [[ "$_rest" -lt 1 ]]; then
+        echo -e "\n\033[1;31mNo queda cupo global de sesiones (los demás clientes ya usan el tope $_mxt).\033[0m\n"
+        exit 1
+    fi
+    if [[ "$sshnum" -gt "$_rest" ]]; then
+        echo -e "\n\033[1;33mCupo global: a este usuario le quedan \033[1;37m$_rest\033[1;33m de $_mxt sesiones. Se usa ese valor.\033[0m"
+        sshnum="$_rest"
+    fi
 fi
 
 grep -v "^$usuario[[:space:]]" "$database" > /tmp/usuarios_db_temp_rev
 mv /tmp/usuarios_db_temp_rev "$database"
 echo "$usuario $sshnum" >> "$database"
+if declare -F redlibre_rev_register_user >/dev/null 2>&1; then
+    redlibre_rev_register_user "$usuario" "$sshnum"
+fi
 
 echo -e "\n\033[1;32mLímite aplicado: $usuario → $sshnum\033[0m\n"
 sleep 2

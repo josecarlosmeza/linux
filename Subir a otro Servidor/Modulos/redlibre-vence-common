@@ -77,7 +77,8 @@ redlibre_vence_apply() {
     printf '%s\n' "$cutoff" >"$VENCE_DIR/$u"
     chmod 644 "$VENCE_DIR/$u" 2>/dev/null || true
     chage -E "$chage_day" "$u" 2>/dev/null || return 1
-    passwd -u "$u" >/dev/null 2>&1 || true
+    # usermod -U no abre TTY; passwd -u a veces espera confirmación PAM y deja colgado el alta.
+    usermod -U "$u" >/dev/null 2>&1 || true
     return 0
 }
 
