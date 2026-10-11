@@ -166,11 +166,30 @@ _exclude_ips() {
 	done
 }
 
+_wg_if_for_id() { printf 'wg-rl%s' "${1:-1}"; }
+
+_flush_nat_wg() {
+	local d
+	for d in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^wg-rl'); do
+		iptables -t nat -D POSTROUTING -o "$d" -j SNAT --to-source "$FE_WGIP" 2>/dev/null || true
+	done
+}
+
+_down_all_fe_wg() {
+	local i
+	_flush_nat_wg
+	wg-quick down "$WGIF" 2>/dev/null || true
+	for i in $(seq 1 99); do
+		wg-quick down "wg-rl${i}" 2>/dev/null || true
+	done
+}
+
 _flush_policy() {
 	local i
 	iptables -t mangle -D OUTPUT -j "$CHAIN" 2>/dev/null || true
 	iptables -t mangle -F "$CHAIN" 2>/dev/null || true
 	iptables -t mangle -X "$CHAIN" 2>/dev/null || true
+	_flush_nat_wg
 	for i in $(seq 0 31); do
 		ip rule del pref $((RULE_PREF + i)) 2>/dev/null || true
 		ip route flush table $((TABLE_BASE + i)) 2>/dev/null || true
@@ -203,27 +222,42 @@ _apply_frontend() {
 	[[ -f "$NDIR/frontend.conf" ]] && . "$NDIR/frontend.conf"
 	port="${WG_PORT:-$WG_PORT_DEF}"
 
-	{
-		echo "[Interface]"
-		echo "Address = ${FE_WGIP}/24"
-		echo "ListenPort = $port"
-		echo "PrivateKey = $priv"
-		echo "Table = off"
-		_enabled_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
+	# Un interfaz por nodo: AllowedIPs 0.0.0.0/0 (si no, WG tira el tráfico a Internet).
+	# Table=off para no robar la ruta default (SSH al acceso sigue por la NIC pública).
+	_down_all_fe_wg
+	_flush_policy
+	i=0
+	_enabled_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
+		ifc=$(_wg_if_for_id "$id")
+		conf="/etc/wireguard/${ifc}.conf"
+		mark=$((MARK_BASE + i))
+		tbl=$((TABLE_BASE + i))
+		{
+			echo "[Interface]"
+			echo "Address = ${FE_WGIP}/32"
+			echo "PrivateKey = $priv"
+			echo "Table = off"
 			echo ""
 			echo "[Peer]"
 			echo "PublicKey = $pk"
-			echo "AllowedIPs = ${wip}/32"
+			echo "AllowedIPs = 0.0.0.0/0"
 			[[ -n "$ep" && -n "$pt" ]] && echo "Endpoint = ${ep}:${pt}"
 			echo "PersistentKeepalive = 25"
-		done
-	} >"$WGCONF"
-	chmod 600 "$WGCONF"
+		} >"$conf"
+		chmod 600 "$conf"
+		if ! wg-quick up "$ifc"; then
+			echo "Falló wg-quick up $ifc"
+			continue
+		fi
+		sysctl -w "net.ipv4.conf.${ifc}.rp_filter=2" >/dev/null 2>&1 || true
+		ip route replace "${wip}/32" dev "$ifc" 2>/dev/null || true
+		ip route replace default dev "$ifc" table "$tbl"
+		ip rule add pref $((RULE_PREF + i)) fwmark "$mark" table "$tbl"
+		iptables -w -t nat -C POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP" 2>/dev/null || \
+			iptables -w -t nat -A POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP"
+		i=$((i + 1))
+	done
 
-	wg-quick down "$WGIF" 2>/dev/null || true
-	wg-quick up "$WGIF" || { echo "Falló wg-quick up $WGIF"; return 1; }
-
-	_flush_policy
 	iptables -w -t mangle -N "$CHAIN" 2>/dev/null || iptables -w -t mangle -F "$CHAIN"
 	iptables -w -t mangle -C OUTPUT -j "$CHAIN" 2>/dev/null || iptables -w -t mangle -I OUTPUT 1 -j "$CHAIN"
 
@@ -234,16 +268,6 @@ _apply_frontend() {
 
 	_exclude_ips | sort -u | while read -r cidr; do
 		[[ -n "$cidr" ]] && iptables -w -t mangle -A "$CHAIN" -d "$cidr" -j RETURN
-	done
-
-	i=0
-	_enabled_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
-		mark=$((MARK_BASE + i))
-		tbl=$((TABLE_BASE + i))
-		ip route replace "${wip}/32" dev "$WGIF" 2>/dev/null || true
-		ip route replace default via "$wip" dev "$WGIF" table "$tbl"
-		ip rule add pref $((RULE_PREF + i)) fwmark "$mark" table "$tbl"
-		i=$((i + 1))
 	done
 
 	# UID SSH → mismo índice que udppy (uid % n)
@@ -339,6 +363,7 @@ _apply_exit() {
 _stop_all() {
 	_flush_policy
 	rm -f "$FLAG"
+	_down_all_fe_wg
 	wg-quick down "$WGIF" 2>/dev/null || true
 	systemctl disable redlibre-nodos.service 2>/dev/null || true
 	echo -e "\033[1;32mEnrutamiento de nodos desactivado.\033[0m"
@@ -366,9 +391,12 @@ _node_status_line() {
 	hs=""; rx=""; tx=""
 	if command -v wg >/dev/null 2>&1 && [[ -n "$pk" ]]; then
 		now=$(date +%s)
-		hs=$(wg show "$WGIF" latest-handshakes 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
-		rx=$(wg show "$WGIF" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
-		tx=$(wg show "$WGIF" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $3}')
+		local ifc
+		ifc=$(_wg_if_for_id "$id")
+		[[ -d "/sys/class/net/$ifc" ]] || ifc="$WGIF"
+		hs=$(wg show "$ifc" latest-handshakes 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
+		rx=$(wg show "$ifc" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
+		tx=$(wg show "$ifc" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $3}')
 		if [[ -n "$hs" && "$hs" != "0" ]]; then
 			age=$((now - hs))
 			if [[ "$age" -lt 180 ]]; then
@@ -411,6 +439,7 @@ _guia() {
 	echo "  Solo túnel WireGuard + NAT. No cree usuarios ahí."
 	echo "  Internet sale con la IP pública de ese VPS (cualquier país)."
 	echo "  Diagnóstico: en el nodo ejecute  nodo-salida  → verificar."
+	echo "  Firewall de la nube (Hetzner/etc.): abrir UDP 51820 (no TCP). WireGuard es UDP."
 	echo ""
 	echo -e "\033[1;37mQué hace el sistema\033[0m"
 	echo "  • Login, limitador, banda y udppy quedan en el servidor de acceso."

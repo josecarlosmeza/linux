@@ -559,6 +559,7 @@ _guia() {
 	echo "  2) Aquí: opción 2 (instalar) con esa pubkey e IP."
 	echo "  3) En el acceso: 19 → 33 → 4 (este nodo) y opción 8 (aplicar)."
 	echo "  4) Aquí: opción 3 (verificar handshake y ping a 10.88.0.1)."
+	echo "  Firewall de la nube: abrir UDP 51820 (no TCP). WireGuard usa UDP."
 	_line
 	_pause
 }
