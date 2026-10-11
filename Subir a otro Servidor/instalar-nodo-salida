@@ -20,6 +20,7 @@ KEYPRIV="$NDIR/wg-private.key"
 KEYPUB="$NDIR/wg-public.key"
 FLAG="$NDIR/enabled"
 EXITCF="$NDIR/exit.conf"
+ACCF="$NDIR/accesos.list"
 WGIF="wg-rl"
 WGCONF="/etc/wireguard/${WGIF}.conf"
 UNIT="redlibre-nodo-salida.service"
@@ -44,6 +45,44 @@ _detect_dev() {
 _pub() { [[ -f "$KEYPUB" ]] && tr -d '\r\n' <"$KEYPUB"; }
 _priv() { [[ -f "$KEYPRIV" ]] && tr -d '\r\n' <"$KEYPRIV"; }
 _wg_ip_for_id() { printf '10.88.0.%s' $((10 + ${1:-1})); }
+_fe_ip_for_id() { printf '10.88.0.%s' "${1:-1}"; }
+
+_list_accesos() {
+	[[ -f "$ACCF" ]] || return 0
+	grep -vE '^[[:space:]]*(#|$)' "$ACCF"
+}
+
+_enabled_accesos() { _list_accesos | awk -F'|' '$7=="1" {print}'; }
+
+_get_acceso() {
+	_list_accesos | awk -F'|' -v i="$1" '$1==i {print; exit}'
+}
+
+_next_acceso_id() {
+	local i
+	for i in $(seq 1 9); do
+		[[ -z "$(_get_acceso "$i")" ]] && { echo "$i"; return 0; }
+	done
+	echo ""
+}
+
+_save_acceso() {
+	local id="$1" rest="$2" tmp
+	tmp=$(mktemp)
+	[[ -f "$ACCF" ]] && grep -vE "^${id}\\|" "$ACCF" >"$tmp" || true
+	echo "$rest" >>"$tmp"
+	mkdir -p "$NDIR"
+	sort -t'|' -k1,1n "$tmp" >"$ACCF"
+	rm -f "$tmp"
+}
+
+_migrate_accesos() {
+	mkdir -p "$NDIR"
+	[[ -s "$ACCF" ]] && return 0
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	[[ -z "${FRONTEND_PUB:-}" ]] && return 0
+	echo "1|acceso1|${FRONTEND_PUB}|${FRONTEND_EP:-}|${FRONTEND_PORT:-$WG_PORT_DEF}|${FE_WGIP}|1" >"$ACCF"
+}
 
 _public_ip() {
 	local ip
@@ -203,20 +242,19 @@ EOF
 }
 
 _apply() {
-	local fe_pub fe_ep fe_port myip myid priv port dev
+	local myip myid priv port dev n
 	_ensure_pkgs || { echo -e "\033[1;31mNo se pudo instalar wireguard-tools.\033[0m"; return 1; }
 	_ensure_keys || return 1
 	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	_migrate_accesos
 	myid="${MY_ID:-1}"
 	myip="${MY_WG_IP:-$(_wg_ip_for_id "$myid")}"
 	port="${WG_PORT:-$WG_PORT_DEF}"
-	fe_pub="${FRONTEND_PUB:-}"
-	fe_ep="${FRONTEND_EP:-}"
-	fe_port="${FRONTEND_PORT:-$WG_PORT_DEF}"
 	dev=$(_detect_dev)
 	priv=$(_priv)
-	if [[ -z "$fe_pub" ]]; then
-		echo -e "\033[1;31mFalta la clave pública del servidor de acceso.\033[0m"
+	n=$(_enabled_accesos | wc -l | tr -d ' ')
+	if [[ "${n:-0}" -lt 1 ]]; then
+		echo -e "\033[1;31mFalta al menos un servidor de acceso (opción 7).\033[0m"
 		return 1
 	fi
 	if [[ -z "$dev" ]]; then
@@ -235,12 +273,14 @@ _apply() {
 		echo "Table = off"
 		echo "PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -C POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o $dev -j MASQUERADE; iptables -C FORWARD -i $WGIF -j ACCEPT 2>/dev/null || iptables -A FORWARD -i $WGIF -j ACCEPT; iptables -C FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sysctl -w net.netfilter.nf_conntrack_udp_timeout=180 >/dev/null 2>&1 || true"
 		echo "PostDown = iptables -t nat -D POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || true; iptables -D FORWARD -i $WGIF -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true"
-		echo ""
-		echo "[Peer]"
-		echo "PublicKey = $fe_pub"
-		echo "AllowedIPs = ${FE_WGIP}/32"
-		[[ -n "$fe_ep" ]] && echo "Endpoint = ${fe_ep}:${fe_port}"
-		echo "PersistentKeepalive = 25"
+		_enabled_accesos | while IFS='|' read -r _aid _an apk aep apt awip _en; do
+			echo ""
+			echo "[Peer]"
+			echo "PublicKey = $apk"
+			echo "AllowedIPs = ${awip}/32"
+			[[ -n "$aep" && -n "$apt" ]] && echo "Endpoint = ${aep}:${apt}"
+			echo "PersistentKeepalive = 25"
+		done
 	} >"$WGCONF"
 	chmod 600 "$WGCONF"
 	_open_udp "$port"
@@ -253,7 +293,7 @@ _apply() {
 	touch "$FLAG"
 	_install_self
 	_write_unit
-	echo -e "\033[1;32mNodo de salida activo ($myip). NAT en $dev.\033[0m"
+	echo -e "\033[1;32mNodo de salida activo ($myip). NAT en $dev. Accesos: $n.\033[0m"
 }
 
 _stop() {
@@ -279,13 +319,21 @@ _show_datos() {
 	echo -e "  Puerto WG: \033[1;37m$port\033[0m"
 	echo -e "  WG IP:     \033[1;37m$wip\033[0m"
 	echo -e "  Pubkey:    \033[1;37m${pub:-<sin clave>}\033[0m"
+	echo ""
+	echo -e "\033[1;33mServidores de acceso emparejados:\033[0m"
+	_migrate_accesos
+	if [[ ! -s "$ACCF" ]]; then
+		echo "  (ninguno — use la opción 7)"
+	else
+		_list_accesos | while IFS='|' read -r aid aname apk aep apt awip aen; do
+			echo -e "  ID=$aid  $aname  WG=$awip  ${aen:+hab=$aen}  $aep"
+		done
+	fi
 	_line
 }
 
 _handshake_age() {
-	local pk hs now
-	[[ -f "$EXITCF" ]] && . "$EXITCF"
-	pk="${FRONTEND_PUB:-}"
+	local pk="$1" hs now
 	[[ -z "$pk" ]] && return 1
 	hs=$(wg show "$WGIF" latest-handshakes 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
 	[[ -z "$hs" || "$hs" = "0" ]] && return 1
@@ -326,9 +374,15 @@ _verify() {
 	if [[ -f "$EXITCF" ]]; then
 		. "$EXITCF"
 		_ok "Configuración guardada (ID=${MY_ID:-?} puerto=${WG_PORT:-?})"
-		[[ -n "$FRONTEND_PUB" ]] || { _fail "Falta pubkey del servidor de acceso"; fails=$((fails + 1)); }
 	else
 		_fail "No existe $EXITCF — ejecute la instalación"; fails=$((fails + 1))
+	fi
+	_migrate_accesos
+	if [[ "$(_enabled_accesos | wc -l | tr -d ' ')" -lt 1 ]]; then
+		_fail "No hay servidores de acceso habilitados (opción 7)"
+		fails=$((fails + 1))
+	else
+		_ok "Servidores de acceso: $(_enabled_accesos | wc -l | tr -d ' ')"
 	fi
 
 	dev=$(_detect_dev)
@@ -372,47 +426,35 @@ _verify() {
 	fi
 
 	echo ""
-	echo -e "\033[1;37mConexión con el servidor de acceso\033[0m"
-	if [[ -n "${FRONTEND_EP:-}" ]]; then
-		_info "Endpoint configurado: ${FRONTEND_EP}:${FRONTEND_PORT:-$WG_PORT_DEF}"
-	else
-		_warn "Sin IP del servidor de acceso: este nodo espera que el acceso inicie el túnel."
-		warns=$((warns + 1))
-	fi
-
-	if ip link show "$WGIF" >/dev/null 2>&1 && [[ -n "${FRONTEND_PUB:-}" ]]; then
+	echo -e "\033[1;37mConexión con cada servidor de acceso\033[0m"
+	if ip link show "$WGIF" >/dev/null 2>&1 && [[ "$(_enabled_accesos | wc -l | tr -d ' ')" -ge 1 ]]; then
 		echo -e "  Esperando handshake hasta ${wait_s}s..."
-		local i
-		for i in $(seq 1 "$wait_s"); do
-			age=$(_handshake_age) && { hs_ok=1; break; }
-			sleep 1
-		done
-		if [[ "$hs_ok" = "1" ]]; then
-			if [[ "$age" -lt 180 ]]; then
-				_ok "Handshake con el servidor de acceso (hace ${age}s)"
+		sleep 2
+		while IFS='|' read -r aid aname apk aep apt awip _en; do
+			age=$(_handshake_age "$apk")
+			if [[ -n "$age" && "$age" -lt 180 ]]; then
+				_ok "Acceso $aid ($aname) handshake hace ${age}s  WG=$awip"
+			elif [[ -n "$age" ]]; then
+				_fail "Acceso $aid ($aname) handshake viejo (${age}s)"
+				fails=$((fails + 1))
 			else
-				_fail "Handshake viejo (${age}s). El túnel está caído o el acceso no aplica."
+				_fail "Acceso $aid ($aname) sin handshake. Cárguelo en 19→33→4/8 o UDP 51820."
 				fails=$((fails + 1))
 			fi
-		else
-			_fail "Sin handshake. El servidor de acceso aún no tiene este nodo, o el UDP está bloqueado."
-			fails=$((fails + 1))
-		fi
-
-		if ping -c 2 -W 2 "$FE_WGIP" >/dev/null 2>&1; then
-			pingms=$(ping -c 1 -W 2 "$FE_WGIP" 2>/dev/null | awk -F'time=' '/time=/{print $2}' | head -1)
-			_ok "Ping a $FE_WGIP (servidor de acceso) ${pingms}"
-		else
-			_fail "No hay ping a $FE_WGIP. Cargue este nodo en el acceso y use la opción 8."
-			fails=$((fails + 1))
-		fi
-
+			if [[ -n "$awip" ]] && ping -c 2 -W 2 "$awip" >/dev/null 2>&1; then
+				pingms=$(ping -c 1 -W 2 "$awip" 2>/dev/null | awk -F'time=' '/time=/{print $2}' | head -1)
+				_ok "Ping a $awip ($aname) ${pingms}"
+			else
+				_fail "Sin ping a $awip ($aname)"
+				fails=$((fails + 1))
+			fi
+		done < <(_enabled_accesos)
 		if command -v wg >/dev/null 2>&1; then
 			echo ""
 			wg show "$WGIF" 2>/dev/null
 		fi
 	else
-		_fail "No se puede probar el túnel (interfaz o pubkey ausente)."
+		_fail "No se puede probar el túnel (interfaz o accesos ausentes)."
 		fails=$((fails + 1))
 	fi
 
@@ -482,6 +524,12 @@ _wizard() {
 	x="${x//[^0-9]/}"
 	[[ -n "$x" ]] && feport="$x"
 
+	echo -ne "\033[1;32mID de túnel de ESE acceso (1–9, distinto por VPS) [\033[1;37m1\033[1;32m]: \033[1;37m"
+	read -r feid
+	feid="${feid//[^0-9]/}"
+	[[ -z "$feid" || "$feid" -lt 1 ]] && feid=1
+	[[ "$feid" -gt 9 ]] && feid=9
+
 	mkdir -p "$NDIR"
 	cat >"$EXITCF" <<EOF
 MY_ID=$id
@@ -491,6 +539,7 @@ FRONTEND_PUB=$fepub
 FRONTEND_EP=$feep
 FRONTEND_PORT=$feport
 EOF
+	_save_acceso "$feid" "${feid}|acceso${feid}|${fepub}|${feep}|${feport}|$(_fe_ip_for_id "$feid")|1"
 	echo exit >"$ROLEF"
 	echo ""
 	if _apply; then
@@ -503,6 +552,67 @@ EOF
 			echo -e "\033[1;33mCuando lo cargue en el acceso, vuelva y use «Verificar instalación y conexión».\033[0m"
 		fi
 	fi
+	_pause
+}
+
+_add_or_edit_acceso() {
+	local edit_id="${1:-}" cur id name pk ep pt wip en
+	clear
+	_migrate_accesos
+	if [[ -n "$edit_id" ]]; then
+		cur=$(_get_acceso "$edit_id")
+		[[ -z "$cur" ]] && { echo "No existe el acceso $edit_id"; _pause; return; }
+		IFS='|' read -r id name pk ep pt wip en <<<"$cur"
+		echo -e "\033[1;32mEditar servidor de acceso $id ($name)\033[0m"
+	else
+		id=$(_next_acceso_id)
+		[[ -z "$id" ]] && { echo -e "\033[1;31mMáximo 9 accesos (IDs 1–9).\033[0m"; _pause; return; }
+		name="acceso$id"; pk=""; ep=""; pt="$WG_PORT_DEF"; en="1"
+		echo -e "\033[1;32mAgregar servidor de acceso\033[0m"
+		echo "Cada VPS de acceso debe tener un ID de túnel distinto (1–9 → 10.88.0.ID)."
+	fi
+	echo -ne "\033[1;32mID túnel (1–9) [\033[1;37m$id\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" && "$x" -ge 1 && "$x" -le 9 ]] && id="$x"
+	echo -ne "\033[1;32mNombre [\033[1;37m${name:-acceso$id}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && name="$x"; [[ -z "$name" ]] && name="acceso$id"
+	echo -ne "\033[1;32mClave pública del servidor de acceso:\033[1;37m "
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && pk="$x"
+	[[ -z "$pk" ]] && { echo -e "\033[1;31mClave vacía.\033[0m"; _pause; return; }
+	echo -ne "\033[1;32mIP pública del acceso (Enter=vacío):\033[1;37m "
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && ep="$x"
+	echo -ne "\033[1;32mPuerto WG del acceso [\033[1;37m${pt:-$WG_PORT_DEF}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" ]] && pt="$x"; [[ -z "$pt" ]] && pt=$WG_PORT_DEF
+	wip=$(_fe_ip_for_id "$id")
+	echo -ne "\033[1;32mHabilitado 1=sí 0=no [\033[1;37m${en:-1}\033[1;32m]: \033[1;37m"
+	read -r x; [[ "$x" = "0" || "$x" = "1" ]] && en="$x"; [[ -z "$en" ]] && en=1
+	_save_acceso "$id" "${id}|${name}|${pk}|${ep}|${pt}|${wip}|${en}"
+	# Mantener exit.conf alineado con el primer habilitado (compatibilidad)
+	local first
+	first=$(_enabled_accesos | head -1)
+	if [[ -n "$first" ]]; then
+		IFS='|' read -r _id _n _pk _ep _pt _wip _en <<<"$first"
+		[[ -f "$EXITCF" ]] && . "$EXITCF"
+		{
+			echo "MY_ID=${MY_ID:-1}"
+			echo "MY_WG_IP=${MY_WG_IP:-$(_wg_ip_for_id 1)}"
+			echo "WG_PORT=${WG_PORT:-$WG_PORT_DEF}"
+			echo "FRONTEND_PUB=$_pk"
+			echo "FRONTEND_EP=$_ep"
+			echo "FRONTEND_PORT=$_pt"
+		} >"$EXITCF"
+	fi
+	echo -e "\033[1;32mAcceso $id ($name) guardado → $wip. Aplique (opción 5).\033[0m"
+	echo -e "En ESE servidor de acceso, opción 2 use el mismo ID de túnel ($id).\033[0m"
+	_pause
+}
+
+_del_acceso() {
+	echo -ne "\033[1;32mID de acceso a quitar: \033[1;37m"
+	read -r id
+	id="${id//[^0-9]/}"
+	[[ -z "$id" ]] && return
+	[[ -f "$ACCF" ]] && grep -vE "^${id}\\|" "$ACCF" >"$ACCF.tmp" && mv "$ACCF.tmp" "$ACCF"
+	echo -e "\033[1;32mAcceso $id eliminado. Aplique (opción 5).\033[0m"
 	_pause
 }
 
@@ -545,7 +655,9 @@ _guia() {
 	echo "    nodo-salida status   ver WireGuard"
 	echo "    nodo-salida stop     desactivar"
 	echo "  /etc/RedLibre/nodos/exit.conf"
-	echo "    ID, puerto, pubkey e IP del servidor de acceso."
+	echo "    ID y puerto de ESTE nodo."
+	echo "  /etc/RedLibre/nodos/accesos.list"
+	echo "    Servidores de acceso (varios). Cada uno: ID 1–9 → 10.88.0.ID"
 	echo "  /etc/RedLibre/nodos/wg-private.key  y  wg-public.key"
 	echo "    Claves de ESTE nodo. La pública se carga en el acceso (opción 4)."
 	echo "  /etc/wireguard/wg-rl.conf"
@@ -558,7 +670,9 @@ _guia() {
 	echo "  1) En el acceso: 19 → 33 → 2 (anote pubkey e IP)."
 	echo "  2) Aquí: opción 2 (instalar) con esa pubkey e IP."
 	echo "  3) En el acceso: 19 → 33 → 4 (este nodo) y opción 8 (aplicar)."
-	echo "  4) Aquí: opción 3 (verificar handshake y ping a 10.88.0.1)."
+	echo "  4) Aquí: opción 3 (verificar handshake y ping a cada acceso)."
+	echo "  Varios accesos: opción 7. Cada VPS de acceso usa un ID de túnel"
+	echo "  distinto (1→10.88.0.1, 2→10.88.0.2). El mismo ID en ambos lados."
 	echo "  Firewall de la nube: abrir UDP 51820 (no TCP). WireGuard usa UDP."
 	_line
 	_pause
@@ -611,6 +725,9 @@ while true; do
 	echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Ver estado (WireGuard)"
 	echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Reaplicar túnel y NAT"
 	echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Desactivar nodo"
+	echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Agregar servidor de acceso"
+	echo -e "\033[1;31m[\033[1;36m8\033[1;31m]\033[1;33m Editar servidor de acceso"
+	echo -e "\033[1;31m[\033[1;36m9\033[1;31m]\033[1;33m Quitar servidor de acceso"
 	echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Salir"
 	echo ""
 	echo -ne "\033[1;32mOpción: \033[1;37m"
@@ -628,6 +745,13 @@ while true; do
 			_stop
 			_pause
 			;;
+		7) _add_or_edit_acceso ;;
+		8)
+			echo -ne "\033[1;32mID de acceso a editar: \033[1;37m"
+			read -r eid
+			_add_or_edit_acceso "${eid//[^0-9]/}"
+			;;
+		9) _del_acceso ;;
 		0 | 00 | "") exit 0 ;;
 		*) echo -e "\033[1;31mOpción no válida.\033[0m"; sleep 1 ;;
 	esac

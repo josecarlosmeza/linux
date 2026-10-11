@@ -15,6 +15,7 @@ KEYPUB="$NDIR/wg-public.key"
 MARKF="$NDIR/udppy-mark.env"
 FLAG="$NDIR/enabled"
 EXITCF="$NDIR/exit.conf"
+ACCF="$NDIR/accesos.list"
 WGIF="wg-rl"
 WGCONF="/etc/wireguard/${WGIF}.conf"
 CHAIN="REDLIBRE_SALIDA"
@@ -113,6 +114,29 @@ _pub() { [[ -f "$KEYPUB" ]] && tr -d '\r\n' <"$KEYPUB"; }
 _priv() { [[ -f "$KEYPRIV" ]] && tr -d '\r\n' <"$KEYPRIV"; }
 
 _wg_ip_for_id() { printf '10.88.0.%s' $((10 + ${1:-1})); }
+_fe_ip_for_id() { printf '10.88.0.%s' "${1:-1}"; }
+
+_list_accesos() {
+	[[ -f "$ACCF" ]] || return 0
+	grep -vE '^[[:space:]]*(#|$)' "$ACCF"
+}
+_enabled_accesos() { _list_accesos | awk -F'|' '$7=="1" {print}'; }
+_save_acceso() {
+	local id="$1" rest="$2" tmp
+	tmp=$(mktemp)
+	[[ -f "$ACCF" ]] && grep -vE "^${id}\\|" "$ACCF" >"$tmp" || true
+	echo "$rest" >>"$tmp"
+	mkdir -p "$NDIR"
+	sort -t'|' -k1,1n "$tmp" >"$ACCF"
+	rm -f "$tmp"
+}
+_migrate_accesos() {
+	mkdir -p "$NDIR"
+	[[ -s "$ACCF" ]] && return 0
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	[[ -z "${FRONTEND_PUB:-}" ]] && return 0
+	echo "1|acceso1|${FRONTEND_PUB}|${FRONTEND_EP:-}|${FRONTEND_PORT:-$WG_PORT_DEF}|${FE_WGIP}|1" >"$ACCF"
+}
 
 _list_nodes() {
 	[[ -f "$LISTF" ]] || return 0
@@ -171,7 +195,10 @@ _wg_if_for_id() { printf 'wg-rl%s' "${1:-1}"; }
 _flush_nat_wg() {
 	local d
 	for d in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^wg-rl'); do
-		iptables -t nat -D POSTROUTING -o "$d" -j SNAT --to-source "$FE_WGIP" 2>/dev/null || true
+		local sip
+		for sip in "$FE_WGIP" 10.88.0.1 10.88.0.2 10.88.0.3 10.88.0.4 10.88.0.5 10.88.0.6 10.88.0.7 10.88.0.8 10.88.0.9; do
+			iptables -t nat -D POSTROUTING -o "$d" -j SNAT --to-source "$sip" 2>/dev/null || true
+		done
 	done
 }
 
@@ -221,6 +248,7 @@ _apply_frontend() {
 	port="${WG_PORT:-$WG_PORT_DEF}"
 	[[ -f "$NDIR/frontend.conf" ]] && . "$NDIR/frontend.conf"
 	port="${WG_PORT:-$WG_PORT_DEF}"
+	FE_WGIP="${FE_WGIP:-10.88.0.1}"
 
 	# Un interfaz por nodo: AllowedIPs 0.0.0.0/0 (si no, WG tira el tráfico a Internet).
 	# Table=off para no robar la ruta default (SSH al acceso sigue por la NIC pública).
@@ -325,15 +353,13 @@ _apply_exit() {
 	_ensure_wg || { echo "Falta wireguard-tools."; return 1; }
 	_ensure_keys || return 1
 	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	_migrate_accesos
 	myid="${MY_ID:-1}"
 	myip="${MY_WG_IP:-$(_wg_ip_for_id "$myid")}"
 	port="${WG_PORT:-$WG_PORT_DEF}"
-	fe_pub="${FRONTEND_PUB:-}"
-	fe_ep="${FRONTEND_EP:-}"
-	fe_port="${FRONTEND_PORT:-$WG_PORT_DEF}"
 	dev=$(_detect_dev)
 	priv=$(_priv)
-	if [[ -z "$fe_pub" ]]; then
+	if [[ "$(_enabled_accesos | wc -l | tr -d ' ')" -lt 1 ]]; then
 		echo "Falta la clave pública del servidor de acceso (opción de emparejar)."
 		return 1
 	fi
@@ -345,12 +371,14 @@ _apply_exit() {
 		echo "Table = off"
 		echo "PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -C POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o $dev -j MASQUERADE; iptables -C FORWARD -i $WGIF -j ACCEPT 2>/dev/null || iptables -A FORWARD -i $WGIF -j ACCEPT; iptables -C FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sysctl -w net.netfilter.nf_conntrack_udp_timeout=180 >/dev/null 2>&1 || true"
 		echo "PostDown = iptables -t nat -D POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || true; iptables -D FORWARD -i $WGIF -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true"
-		echo ""
-		echo "[Peer]"
-		echo "PublicKey = $fe_pub"
-		echo "AllowedIPs = ${FE_WGIP}/32"
-		[[ -n "$fe_ep" ]] && echo "Endpoint = ${fe_ep}:${fe_port}"
-		echo "PersistentKeepalive = 25"
+		_enabled_accesos | while IFS='|' read -r _aid _an apk aep apt awip _en; do
+			echo ""
+			echo "[Peer]"
+			echo "PublicKey = $apk"
+			echo "AllowedIPs = ${awip}/32"
+			[[ -n "$aep" && -n "$apt" ]] && echo "Endpoint = ${aep}:${apt}"
+			echo "PersistentKeepalive = 25"
+		done
 	} >"$WGCONF"
 	chmod 600 "$WGCONF"
 	wg-quick down "$WGIF" 2>/dev/null || true
@@ -434,6 +462,8 @@ _guia() {
 	echo "  5) En el nodo, cargue la pubkey de este servidor y verifique la conexión."
 	echo "  6) Opción 8 — aplicar. Los clientes siguen conectándose al servidor de acceso."
 	echo "  El nombre del nodo puede ser el país o ciudad (ar-bue, cl-scl, us-mia…)."
+	echo "  Varios accesos en el mismo nodo: cada VPS de acceso elige ID de túnel"
+	echo "  1–9 (10.88.0.1 … 10.88.0.9) y en el nodo se agrega con ese mismo ID."
 	echo ""
 	echo -e "\033[1;37mNodo de salida (rol SALIDA)\033[0m"
 	echo "  Solo túnel WireGuard + NAT. No cree usuarios ahí."
@@ -461,7 +491,7 @@ _guia() {
 	echo "  /usr/local/sbin/nodo-salida"
 	echo "    Queda en el nodo al instalar. Menú, o:  verify | apply | status | stop"
 	echo "  /etc/RedLibre/nodos/"
-	echo "    Claves WG, role, nodos.list (acceso) o exit.conf (nodo), enabled."
+	echo "    Claves WG, role, nodos.list (acceso) o exit.conf + accesos.list (nodo)."
 	echo "  /etc/RedLibre/nodos/udppy-mark.env"
 	echo "    Marcas para que udppy (UDP) salga por el mismo nodo que el SSH."
 	echo "  /etc/wireguard/wg-rl.conf"
@@ -479,13 +509,28 @@ _cfg_frontend() {
 	read -r p
 	p="${p//[^0-9]/}"
 	[[ -z "$p" ]] && p=$WG_PORT_DEF
+	cur_fe=1
+	[[ -f "$NDIR/frontend.conf" ]] && . "$NDIR/frontend.conf"
+	[[ -n "${FE_ID:-}" ]] && cur_fe="$FE_ID"
+	echo -ne "\033[1;32mID de túnel de ESTE acceso (1–9, distinto si comparte nodo) [\033[1;37m$cur_fe\033[1;32m]: \033[1;37m"
+	read -r feid
+	feid="${feid//[^0-9]/}"
+	[[ -z "$feid" ]] && feid="$cur_fe"
+	[[ "$feid" -lt 1 ]] && feid=1
+	[[ "$feid" -gt 9 ]] && feid=9
+	FE_WGIP=$(_fe_ip_for_id "$feid")
 	mkdir -p "$NDIR"
-	echo "WG_PORT=$p" >"$NDIR/frontend.conf"
+	{
+		echo "WG_PORT=$p"
+		echo "FE_ID=$feid"
+		echo "FE_WGIP=$FE_WGIP"
+	} >"$NDIR/frontend.conf"
 	echo frontend >"$ROLEF"
 	echo ""
 	echo -e "\033[1;33mClave pública de este servidor de acceso (péguela en cada nodo de salida):\033[0m"
 	echo -e "\033[1;37m$(_pub)\033[0m"
-	echo -e "\033[1;33mDirección WG: \033[1;37m$FE_WGIP\033[0m  \033[1;33mPuerto:\033[1;37m $p\033[0m"
+	echo -e "\033[1;33mID túnel: \033[1;37m$feid\033[0m  \033[1;33mDirección WG: \033[1;37m$FE_WGIP\033[0m  \033[1;33mPuerto:\033[1;37m $p\033[0m"
+	echo -e "\033[1;33mEn el nodo, al agregar este acceso use el mismo ID ($feid).\033[0m"
 	_pause
 }
 
@@ -517,6 +562,7 @@ FRONTEND_PUB=$fepub
 FRONTEND_EP=$feep
 FRONTEND_PORT=$WG_PORT_DEF
 EOF
+	[[ -n "$fepub" ]] && _save_acceso 1 "1|acceso1|${fepub}|${feep}|${WG_PORT_DEF}|$(_fe_ip_for_id 1)|1"
 	echo exit >"$ROLEF"
 	echo ""
 	echo -e "\033[1;33mDatos para cargar en el servidor de acceso (opción 4 — agregar nodo):\033[0m"
