@@ -1,6 +1,6 @@
 #!/bin/bash
 #====================================================
-# Nodos de salida (Brasil frontend → Argentina NAT)
+# Nodos de salida (servidor de acceso → nodos NAT / IP de salida)
 # Menú 19 → opción 33
 # CLI: apply | restore | status | hook-user | stop
 #====================================================
@@ -261,7 +261,7 @@ _apply_exit() {
 	dev=$(_detect_dev)
 	priv=$(_priv)
 	if [[ -z "$fe_pub" ]]; then
-		echo "Falta la clave pública del frontend (opción de emparejar)."
+		echo "Falta la clave pública del servidor de acceso (opción de emparejar)."
 		return 1
 	fi
 	{
@@ -347,20 +347,21 @@ _guia() {
 	tput sgr0
 	echo ""
 	_line
-	echo -e "\033[1;37mBrasil (este menú, rol FRONTEND)\033[0m"
-	echo "  1) Opción 2 — configurar este VPS como frontend."
-	echo "  2) En cada VPS de Argentina: RedLibre → 19 → 33 → opción 3 (nodo salida)."
-	echo "  3) Copie la clave pública que muestra Argentina."
-	echo "  4) Aquí, opción 4 — agregar nodo (IP pública AR, puerto WG, clave, peso)."
-	echo "  5) En Argentina, cargue la clave pública de Brasil (emparejar frontend)."
-	echo "  6) Opción 8 — aplicar enrutamiento. Los clientes siguen conectándose a Brasil."
+	echo -e "\033[1;37mServidor de acceso (este VPS, rol ACCESO)\033[0m"
+	echo "  1) Opción 2 — configurar este VPS como servidor de acceso."
+	echo "  2) En cada VPS de salida: RedLibre → 19 → 33 → opción 3."
+	echo "  3) Copie la clave pública que muestra el nodo de salida."
+	echo "  4) Aquí, opción 4 — agregar nodo (nombre, IP pública, puerto WG, clave, peso)."
+	echo "  5) En el nodo de salida, cargue la clave pública del servidor de acceso."
+	echo "  6) Opción 8 — aplicar. Los clientes siguen conectándose al servidor de acceso."
+	echo "  El nombre del nodo puede ser el país o ciudad (ar-bue, cl-scl, us-mia…)."
 	echo ""
-	echo -e "\033[1;37mArgentina (rol NODO DE SALIDA)\033[0m"
+	echo -e "\033[1;37mNodo de salida (rol SALIDA)\033[0m"
 	echo "  Solo túnel WireGuard + NAT. No cree usuarios ahí."
-	echo "  Internet sale con la IP pública de ese VPS."
+	echo "  Internet sale con la IP pública de ese VPS (cualquier país)."
 	echo ""
 	echo -e "\033[1;37mQué hace el sistema\033[0m"
-	echo "  • Login, limitador, banda y udppy quedan en Brasil."
+	echo "  • Login, limitador, banda y udppy quedan en el servidor de acceso."
 	echo "  • Cada usuario (UID) se clava a un nodo: TCP y UDP (udppy) usan la misma marca."
 	echo "  • Las conexiones ya abiertas no se mueven al agregar/quitar nodos (CONNMARK)."
 	echo "  • Si un nodo cae, esas sesiones mueren; las nuevas usan los que siguen UP."
@@ -373,7 +374,7 @@ _guia() {
 
 _cfg_frontend() {
 	clear
-	echo -e "\033[1;32mEste servidor será FRONTEND (Brasil)\033[0m"
+	echo -e "\033[1;32mEste servidor será de ACCESO (login de clientes)\033[0m"
 	_ensure_wg || { echo -e "\033[1;31mInstale: dnf install -y wireguard-tools\033[0m"; _pause; return; }
 	_ensure_keys
 	echo -ne "\033[1;32mPuerto WireGuard [\033[1;37m$WG_PORT_DEF\033[1;32m]: \033[1;37m"
@@ -384,7 +385,7 @@ _cfg_frontend() {
 	echo "WG_PORT=$p" >"$NDIR/frontend.conf"
 	echo frontend >"$ROLEF"
 	echo ""
-	echo -e "\033[1;33mClave pública de este frontend (péguela en cada nodo Argentina):\033[0m"
+	echo -e "\033[1;33mClave pública de este servidor de acceso (péguela en cada nodo de salida):\033[0m"
 	echo -e "\033[1;37m$(_pub)\033[0m"
 	echo -e "\033[1;33mDirección WG: \033[1;37m$FE_WGIP\033[0m  \033[1;33mPuerto:\033[1;37m $p\033[0m"
 	_pause
@@ -392,7 +393,7 @@ _cfg_frontend() {
 
 _cfg_exit() {
 	clear
-	echo -e "\033[1;32mEste servidor será NODO DE SALIDA (Argentina)\033[0m"
+	echo -e "\033[1;32mEste servidor será NODO DE SALIDA (NAT / IP de salida)\033[0m"
 	_ensure_wg || { echo -e "\033[1;31mInstale: dnf install -y wireguard-tools\033[0m"; _pause; return; }
 	_ensure_keys
 	echo -ne "\033[1;32mID de este nodo (1–99) [\033[1;37m1\033[1;32m]: \033[1;37m"
@@ -403,10 +404,10 @@ _cfg_exit() {
 	read -r p
 	p="${p//[^0-9]/}"
 	[[ -z "$p" ]] && p=$WG_PORT_DEF
-	echo -ne "\033[1;32mClave pública del FRONTEND (Brasil):\033[1;37m "
+	echo -ne "\033[1;32mClave pública del servidor de ACCESO:\033[1;37m "
 	read -r fepub
 	fepub="${fepub//[[:space:]]/}"
-	echo -ne "\033[1;32mIP pública del frontend (opcional, Enter=vacío):\033[1;37m "
+	echo -ne "\033[1;32mIP pública del servidor de acceso (opcional, Enter=vacío):\033[1;37m "
 	read -r feep
 	feep="${feep//[[:space:]]/}"
 	mkdir -p "$NDIR"
@@ -420,7 +421,7 @@ FRONTEND_PORT=$WG_PORT_DEF
 EOF
 	echo exit >"$ROLEF"
 	echo ""
-	echo -e "\033[1;33mDatos para cargar en Brasil (opción 4 — agregar nodo):\033[0m"
+	echo -e "\033[1;33mDatos para cargar en el servidor de acceso (opción 4 — agregar nodo):\033[0m"
 	echo -e "  ID:        \033[1;37m$id\033[0m"
 	echo -e "  WG IP:     \033[1;37m$(_wg_ip_for_id "$id")\033[0m"
 	echo -e "  Puerto:    \033[1;37m$p\033[0m"
@@ -429,7 +430,7 @@ EOF
 	if [[ -n "$fepub" ]]; then
 		_apply_exit
 	else
-		echo -e "\033[1;33mGuarde la pubkey del frontend y vuelva a aplicar (opción 8).\033[0m"
+		echo -e "\033[1;33mGuarde la pubkey del servidor de acceso y vuelva a aplicar (opción 8).\033[0m"
 	fi
 	_pause
 }
@@ -448,8 +449,8 @@ _add_or_edit_node() {
 	fi
 	echo -ne "\033[1;32mID (1–99) [\033[1;37m${id:-1}\033[1;32m]: \033[1;37m"
 	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" ]] && id="$x"; [[ -z "$id" ]] && id=1
-	echo -ne "\033[1;32mNombre [\033[1;37m${name:-ar$id}\033[1;32m]: \033[1;37m"
-	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && name="$x"; [[ -z "$name" ]] && name="ar$id"
+	echo -ne "\033[1;32mNombre (país/ciudad) [\033[1;37m${name:-nodo$id}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && name="$x"; [[ -z "$name" ]] && name="nodo$id"
 	echo -ne "\033[1;32mIP pública del nodo:\033[1;37m "
 	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && ep="$x"
 	[[ -z "$ep" ]] && { echo -e "\033[1;31mIP vacía.\033[0m"; _pause; return; }
@@ -549,7 +550,7 @@ while true; do
 	[[ -z "$r" ]] && r="(sin rol)"
 	n=$(_count_enabled)
 	tput setaf 7; tput setab 4; tput bold
-	printf '%36s%s%-8s\n' " Nodos de salida (Brasil / Argentina) "
+	printf '%36s%s%-8s\n' " Nodos de salida (acceso / NAT) "
 	tput sgr0
 	echo ""
 	_line
@@ -562,8 +563,8 @@ while true; do
 	_line
 	echo ""
 	echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Cómo usar esta sección (reseña)"
-	echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Este VPS es FRONTEND (Brasil — login de clientes)"
-	echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Este VPS es NODO DE SALIDA (Argentina — NAT / IP local)"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Este VPS es SERVIDOR DE ACCESO (login de clientes)"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Este VPS es NODO DE SALIDA (NAT / IP de salida)"
 	echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Agregar nodo"
 	echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Editar nodo"
 	echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Quitar nodo"
