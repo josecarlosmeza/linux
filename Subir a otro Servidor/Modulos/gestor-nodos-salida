@@ -34,16 +34,63 @@ _detect_dev() {
 	ip -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
 }
 
-_ensure_wg() {
-	command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && return 0
+_wg_kmod_ok() {
+	ip link add wg-rl-probe type wireguard >/dev/null 2>&1 || return 1
+	ip link delete wg-rl-probe >/dev/null 2>&1 || true
+	return 0
+}
+
+_ensure_wg_kmod() {
+	modprobe wireguard >/dev/null 2>&1 || true
+	_wg_kmod_ok && return 0
+	echo -e "\033[1;33mEl kernel no tiene WireGuard. Instalando el módulo...\033[0m"
+	local ver_major virt pm
+	virt=$(systemd-detect-virt 2>/dev/null || echo desconocido)
+	ver_major=""
+	[[ -f /etc/os-release ]] && . /etc/os-release && ver_major="${VERSION_ID%%.*}"
 	if command -v dnf >/dev/null 2>&1; then
-		dnf install -y wireguard-tools >/dev/null 2>&1
+		pm=dnf
 	elif command -v yum >/dev/null 2>&1; then
-		yum install -y wireguard-tools >/dev/null 2>&1
-	elif command -v apt-get >/dev/null 2>&1; then
-		DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools >/dev/null 2>&1
+		pm=yum
+	else
+		pm=""
 	fi
-	command -v wg >/dev/null 2>&1
+	if [[ -n "$pm" ]]; then
+		$pm install -y kernel-modules-core kernel-modules kernel-modules-extra >/dev/null 2>&1 || true
+		if [[ -n "$ver_major" && "$ver_major" -le 8 ]]; then
+			$pm install -y epel-release elrepo-release >/dev/null 2>&1 || true
+			$pm install -y kmod-wireguard >/dev/null 2>&1 || true
+		fi
+	elif command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard wireguard-dkms "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+	fi
+	depmod -a >/dev/null 2>&1 || true
+	modprobe wireguard >/dev/null 2>&1 || true
+	_wg_kmod_ok && return 0
+	echo -e "\033[1;31mUnknown device type: este kernel no puede crear interfaces WireGuard.\033[0m"
+	echo -e "  Kernel: \033[1;37m$(uname -r)\033[0m   virt: \033[1;37m$virt\033[0m"
+	if echo "$virt" | grep -qiE 'openvz|vz|lxc|lxd'; then
+		echo -e "  Este VPS es contenedor (OpenVZ/LXC). Use un VPS KVM con kernel propio."
+	else
+		echo "  Alma/RHEL 8:  dnf install -y elrepo-release kmod-wireguard && reboot"
+		echo "  Alma/RHEL 9+: dnf install -y kernel-modules-extra && modprobe wireguard"
+		echo "  Si actualizó el kernel recién, reinicie el VPS."
+	fi
+	return 1
+}
+
+_ensure_wg() {
+	if ! command -v wg >/dev/null 2>&1 || ! command -v wg-quick >/dev/null 2>&1; then
+		if command -v dnf >/dev/null 2>&1; then
+			dnf install -y wireguard-tools >/dev/null 2>&1
+		elif command -v yum >/dev/null 2>&1; then
+			yum install -y wireguard-tools >/dev/null 2>&1
+		elif command -v apt-get >/dev/null 2>&1; then
+			DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard wireguard-tools >/dev/null 2>&1
+		fi
+	fi
+	command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 || return 1
+	_ensure_wg_kmod
 }
 
 _ensure_keys() {
