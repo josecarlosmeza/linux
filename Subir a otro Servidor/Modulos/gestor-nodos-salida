@@ -56,10 +56,12 @@ _ensure_wg_kmod() {
 		pm=""
 	fi
 	if [[ -n "$pm" ]]; then
-		$pm install -y kernel-modules-core kernel-modules kernel-modules-extra >/dev/null 2>&1 || true
 		if [[ -n "$ver_major" && "$ver_major" -le 8 ]]; then
+			# Alma/RHEL 8: kernel-modules-extra instala OTRO kernel y no cubre el que está corriendo.
 			$pm install -y epel-release elrepo-release >/dev/null 2>&1 || true
-			$pm install -y kmod-wireguard >/dev/null 2>&1 || true
+			$pm install -y kmod-wireguard wireguard-tools >/dev/null 2>&1 || true
+		else
+			$pm install -y kernel-modules-core kernel-modules kernel-modules-extra wireguard-tools >/dev/null 2>&1 || true
 		fi
 	elif command -v apt-get >/dev/null 2>&1; then
 		DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard wireguard-dkms "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
