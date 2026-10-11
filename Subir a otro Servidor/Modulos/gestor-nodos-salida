@@ -371,6 +371,23 @@ _guia() {
 	echo ""
 	echo -e "\033[1;37mEstado (opción 7)\033[0m"
 	echo "  UP/DOWN, antigüedad del handshake, bytes RX/TX (carga) y peso."
+	echo ""
+	echo -e "\033[1;37mArchivos (qué es cada uno)\033[0m"
+	echo "  gestor-nodos-salida"
+	echo "    Este menú (19 → 33). Solo en el servidor de acceso: alta/edición"
+	echo "    de nodos, estado/carga y aplicar el enrutamiento."
+	echo "  instalar-nodo-salida"
+	echo "    Instalador liviano del VPS de salida. No instala el panel."
+	echo "    wget -qO /tmp/nodo-salida https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/instalar-nodo-salida"
+	echo "    sed -i 's/\\r$//' /tmp/nodo-salida && bash /tmp/nodo-salida"
+	echo "  /usr/local/sbin/nodo-salida"
+	echo "    Queda en el nodo al instalar. Menú, o:  verify | apply | status | stop"
+	echo "  /etc/RedLibre/nodos/"
+	echo "    Claves WG, role, nodos.list (acceso) o exit.conf (nodo), enabled."
+	echo "  /etc/RedLibre/nodos/udppy-mark.env"
+	echo "    Marcas para que udppy (UDP) salga por el mismo nodo que el SSH."
+	echo "  /etc/wireguard/wg-rl.conf"
+	echo "    Túnel WireGuard (no editar a mano salvo diagnóstico)."
 	_line
 	_pause
 }
