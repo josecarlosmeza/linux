@@ -383,6 +383,7 @@ if [[ -x /bin/gestor-banda-user ]]; then
         /bin/gestor-banda-user hook-add "$username" >/dev/null 2>&1 || true
     fi
 fi
+[[ -x /bin/gestor-nodos-salida ]] && /bin/gestor-nodos-salida hook-user >/dev/null 2>&1 || true
 
 # --- RESULTADOS (mismo bloque que criarusuario administrador) ---
 clear

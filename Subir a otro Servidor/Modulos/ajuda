@@ -32,4 +32,5 @@ echo -e " \033[1;37m[\033[1;31m26\033[1;37m] - \033[1;33m Cambiar contraseña ro
 echo -e " \033[1;37m[\033[1;31m27\033[1;37m] - \033[1;33m Ejecución automática al iniciar"
 echo -e " \033[1;37m[\033[1;31m28\033[1;37m] - \033[1;33m Actualizar script RedLibre"
 echo -e " \033[1;37m[\033[1;31m29\033[1;37m] - \033[1;33m Desinstalar RedLibre"
-echo -e " \033[1;37m[\033[1;31m30\033[1;37m] - \033[1;33m Volver al menú anterior\033[0m"
+echo -e " \033[1;37m[\033[1;31m30\033[1;37m] - \033[1;33m Volver al menú anterior"
+echo -e " \033[1;37m[\033[1;31m33\033[1;37m] - \033[1;33m Nodos de salida Brasil/Argentina (menú 19)\033[0m"

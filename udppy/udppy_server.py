@@ -46,6 +46,66 @@ _OUT_QUEUE_MAX = 4096
 # En main() se fija si uvloop.install() se aplicó antes de asyncio.run
 _uvloop_installed = False
 
+# Linux: SO_PEERCRED / SO_MARK para clavar el UDP al mismo nodo de salida que el UID SSH.
+_SO_PEERCRED = 17
+_SO_MARK = 36
+_EXIT_MARK_FILE_DEFAULT = "/etc/RedLibre/nodos/udppy-mark.env"
+
+
+def _read_peer_uid(sock: Optional[socket.socket]) -> Optional[int]:
+    """UID del proceso que se conectó a :7300 (sshd del cliente). None si no es Linux/local."""
+    if sock is None:
+        return None
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, _SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", creds)
+        if uid >= 0:
+            return int(uid)
+    except OSError:
+        return None
+    return None
+
+
+def _load_exit_mark_conf(path: Optional[str]) -> tuple[int, int]:
+    """(base, count). count=0 → no marcar."""
+    if not path:
+        path = _EXIT_MARK_FILE_DEFAULT
+    base, count = 0x8801, 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k, v = k.strip(), v.strip()
+                if k in ("EXIT_MARK_BASE", "BASE") and v.isdigit():
+                    base = int(v)
+                elif k in ("EXIT_NODE_COUNT", "COUNT") and v.isdigit():
+                    count = int(v)
+    except OSError:
+        return 0, 0
+    if count < 1:
+        return 0, 0
+    return base, count
+
+
+def _exit_mark_for_uid(uid: Optional[int], base: int, count: int) -> int:
+    if uid is None or count < 1 or base < 1:
+        return 0
+    if uid < 1000:
+        return 0
+    return int(base) + (int(uid) % int(count))
+
+
+def _apply_so_mark(sock: Optional[socket.socket], mark: int) -> None:
+    if sock is None or mark < 1:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, _SO_MARK, int(mark))
+    except OSError as e:
+        logging.debug("SO_MARK %s: %s", mark, e)
+
 # PacketProto: uint16 LE longitud + payload (protocol/packetproto.h)
 PACKETPROTO_MAXPAYLOAD = 0xFFFF
 
@@ -130,6 +190,7 @@ class UdppyConnection:
         udp_mtu: int,
         udppy_mtu: int,
         linux_tune_sockets: bool,
+        exit_mark: int = 0,
     ) -> None:
         self.client = client
         self.conid = conid
@@ -142,6 +203,7 @@ class UdppyConnection:
         self.udp_mtu = udp_mtu
         self.udppy_mtu = udppy_mtu
         self._linux_tune_sockets = linux_tune_sockets
+        self._exit_mark = int(exit_mark or 0)
 
         self._orig_bin = _ip_to_bin(orig_ip, ipv6=orig_ipv6)
         # Prefijo de respuesta reutilizable (flags=0 + conid + addr orig).
@@ -168,10 +230,10 @@ class UdppyConnection:
         )
         self._transport = t
         self._protocol = p
-        if self._linux_tune_sockets:
-            usock = t.get_extra_info("socket")
-            if usock is not None:
-                linux_tune.tune_udp_relay_socket(usock)
+        usock = t.get_extra_info("socket")
+        if self._linux_tune_sockets and usock is not None:
+            linux_tune.tune_udp_relay_socket(usock)
+        _apply_so_mark(usock, self._exit_mark)
 
     def send_udp(self, data: bytes) -> None:
         if self._closed or not self._transport:
@@ -226,6 +288,8 @@ class TcpClientSession:
         dns_port: Optional[int],
         max_connections: int,
         linux_tune_sockets: bool,
+        exit_mark_base: int = 0,
+        exit_node_count: int = 0,
     ) -> None:
         self.reader = reader
         self.writer = writer
@@ -235,6 +299,10 @@ class TcpClientSession:
         self.dns_port = dns_port
         self.max_connections = max_connections
         self._linux_tune_sockets = linux_tune_sockets
+        self._exit_mark_base = int(exit_mark_base or 0)
+        self._exit_node_count = int(exit_node_count or 0)
+        self._exit_mark = 0
+        self._peer_uid: Optional[int] = None
 
         self._pp = PacketProtoReader()
         # conid -> conexión (LRU: OrderedDict move_to_end en uso)
@@ -254,11 +322,19 @@ class TcpClientSession:
 
     async def run(self) -> None:
         peer = self.writer.get_extra_info("peername")
-        logging.info("Cliente TCP conectado: %s", peer)
-        if self._linux_tune_sockets:
-            tsock = self.writer.get_extra_info("socket")
-            if tsock is not None:
-                linux_tune.tune_tcp_client_for_udppy(tsock)
+        tsock = self.writer.get_extra_info("socket")
+        self._peer_uid = _read_peer_uid(tsock)
+        self._exit_mark = _exit_mark_for_uid(
+            self._peer_uid, self._exit_mark_base, self._exit_node_count
+        )
+        logging.info(
+            "Cliente TCP conectado: %s uid=%s mark=%s",
+            peer,
+            self._peer_uid,
+            self._exit_mark or "-",
+        )
+        if self._linux_tune_sockets and tsock is not None:
+            linux_tune.tune_tcp_client_for_udppy(tsock)
         self._writer_task = asyncio.create_task(self._flush_loop())
         self._idle_task = asyncio.create_task(self._idle_sweeper())
         try:
@@ -438,6 +514,7 @@ class TcpClientSession:
             udp_mtu=self.udp_mtu,
             udppy_mtu=self.udppy_mtu,
             linux_tune_sockets=self._linux_tune_sockets,
+            exit_mark=self._exit_mark,
         )
         self._by_conid[conid] = con
         try:
@@ -518,6 +595,8 @@ async def _client_connected(
     dns_port: Optional[int],
     max_connections: int,
     linux_tune_sockets: bool,
+    exit_mark_base: int = 0,
+    exit_node_count: int = 0,
 ) -> None:
     session = TcpClientSession(
         reader,
@@ -528,6 +607,8 @@ async def _client_connected(
         dns_port=dns_port,
         max_connections=max_connections,
         linux_tune_sockets=linux_tune_sockets,
+        exit_mark_base=exit_mark_base,
+        exit_node_count=exit_node_count,
     )
     try:
         await session.run()
@@ -591,6 +672,14 @@ async def _amain() -> None:
         action="store_true",
         help="En Linux, no usar uvloop (asyncio estándar).",
     )
+    ap.add_argument(
+        "--exit-mark-file",
+        type=str,
+        default=_EXIT_MARK_FILE_DEFAULT,
+        metavar="RUTA",
+        help="Archivo EXIT_MARK_BASE / EXIT_NODE_COUNT (nodos de salida RedLibre). "
+        "Si existe, el UDP hereda SO_MARK del UID SSH (SO_PEERCRED).",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -625,6 +714,14 @@ async def _amain() -> None:
     linux_tune_sockets = (
         linux_tune.is_linux() and not args.no_linux_tune
     )
+    exit_mark_base, exit_node_count = _load_exit_mark_conf(args.exit_mark_file)
+    if exit_node_count:
+        logging.info(
+            "marca de salida: base=%s nodos=%s (archivo %s)",
+            exit_mark_base,
+            exit_node_count,
+            args.exit_mark_file,
+        )
 
     server = await asyncio.start_server(
         lambda r, w: _client_connected(
@@ -636,6 +733,8 @@ async def _amain() -> None:
             dns_port=dns_port,
             max_connections=args.max_connections,
             linux_tune_sockets=linux_tune_sockets,
+            exit_mark_base=exit_mark_base,
+            exit_node_count=exit_node_count,
         ),
         host=host,
         port=port,

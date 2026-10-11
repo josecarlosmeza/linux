@@ -1,0 +1,28 @@
+# Ejemplo de referencia. En el servidor use install.py para generar la unidad con rutas reales:
+#   sudo python3 install.py --install-systemd [--enable-systemd] [--systemd-dns 8.8.8.8:53]
+#
+[Unit]
+Description=udppy — túnel UDP compatible con badvpn/udpgw (tun2socks)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# AlmaLinux / RHEL: ajuste rutas y usuario si no ejecuta como root
+# User=udppy
+# Group=udppy
+# Directorio de instalación (debe coincidir con donde copió el proyecto)
+WorkingDirectory=/opt/udppy
+# DNS: en AlmaLinux suele bastar el primer nameserver de /etc/resolv.conf o
+# 127.0.0.1:53 si usa systemd-resolved (compruebe con: resolvectl status)
+ExecStart=/usr/bin/python3 /opt/udppy/udppy_server.py --listen-addr 0.0.0.0:7300 --dns 8.8.8.8:53
+Restart=on-failure
+RestartSec=3
+# Límites útiles en servidores con muchas conexiones UDP
+LimitNOFILE=1048576
+# uvloop: por defecto en Linux si está instalado (pip install uvloop). Para desactivar:
+#   añada --no-uvloop al ExecStart o use install.py --systemd-no-uvloop
+# Environment=PYTHONPATH=/opt/udppy
+
+[Install]
+WantedBy=multi-user.target

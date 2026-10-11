@@ -1,0 +1,602 @@
+#!/bin/bash
+#====================================================
+# Nodos de salida (Brasil frontend → Argentina NAT)
+# Menú 19 → opción 33
+# CLI: apply | restore | status | hook-user | stop
+#====================================================
+set +e
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin${PATH:+:$PATH}"
+
+NDIR="/etc/RedLibre/nodos"
+ROLEF="$NDIR/role"
+LISTF="$NDIR/nodos.list"
+KEYPRIV="$NDIR/wg-private.key"
+KEYPUB="$NDIR/wg-public.key"
+MARKF="$NDIR/udppy-mark.env"
+FLAG="$NDIR/enabled"
+EXITCF="$NDIR/exit.conf"
+WGIF="wg-rl"
+WGCONF="/etc/wireguard/${WGIF}.conf"
+CHAIN="REDLIBRE_SALIDA"
+MARK_BASE=34817
+TABLE_BASE=101
+RULE_PREF=10800
+WG_PORT_DEF=51820
+FE_WGIP="10.88.0.1"
+WG_NET="10.88.0.0/24"
+
+_pause() { echo -ne "\033[1;33m[ENTER]\033[0m "; read -r; }
+_line() { echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"; }
+
+_role() { [[ -f "$ROLEF" ]] && tr -d '\r\n' <"$ROLEF" || echo ""; }
+
+_detect_dev() {
+	ip -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
+}
+
+_ensure_wg() {
+	command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && return 0
+	if command -v dnf >/dev/null 2>&1; then
+		dnf install -y wireguard-tools >/dev/null 2>&1
+	elif command -v yum >/dev/null 2>&1; then
+		yum install -y wireguard-tools >/dev/null 2>&1
+	elif command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools >/dev/null 2>&1
+	fi
+	command -v wg >/dev/null 2>&1
+}
+
+_ensure_keys() {
+	mkdir -p "$NDIR"
+	chmod 700 "$NDIR"
+	if [[ ! -f "$KEYPRIV" ]]; then
+		_ensure_wg || return 1
+		umask 077
+		wg genkey >"$KEYPRIV"
+		wg pubkey <"$KEYPRIV" >"$KEYPUB"
+	fi
+	[[ -s "$KEYPUB" ]] || wg pubkey <"$KEYPRIV" >"$KEYPUB"
+	chmod 600 "$KEYPRIV" 2>/dev/null || true
+	chmod 644 "$KEYPUB" 2>/dev/null || true
+}
+
+_pub() { [[ -f "$KEYPUB" ]] && tr -d '\r\n' <"$KEYPUB"; }
+_priv() { [[ -f "$KEYPRIV" ]] && tr -d '\r\n' <"$KEYPRIV"; }
+
+_wg_ip_for_id() { printf '10.88.0.%s' $((10 + ${1:-1})); }
+
+_list_nodes() {
+	[[ -f "$LISTF" ]] || return 0
+	grep -vE '^[[:space:]]*(#|$)' "$LISTF"
+}
+
+_enabled_nodes() {
+	_list_nodes | awk -F'|' '$8=="1" {print}'
+}
+
+_count_enabled() {
+	_enabled_nodes | wc -l | tr -d ' '
+}
+
+_save_node_line() {
+	local id="$1" rest="$2" tmp
+	tmp=$(mktemp)
+	[[ -f "$LISTF" ]] && grep -vE "^${id}\\|" "$LISTF" >"$tmp" || true
+	echo "$rest" >>"$tmp"
+	mkdir -p "$NDIR"
+	sort -t'|' -k1,1n "$tmp" >"$LISTF"
+	rm -f "$tmp"
+}
+
+_get_node() {
+	local id="$1"
+	_list_nodes | awk -F'|' -v i="$id" '$1==i {print; exit}'
+}
+
+_write_mark_file() {
+	local n
+	n=$(_count_enabled)
+	[[ -z "$n" ]] && n=0
+	mkdir -p "$NDIR"
+	cat >"$MARKF" <<EOF
+# Generado por gestor-nodos-salida — udppy SO_MARK = BASE + (uid % COUNT)
+EXIT_MARK_BASE=$MARK_BASE
+EXIT_NODE_COUNT=$n
+EOF
+	chmod 644 "$MARKF"
+}
+
+_exclude_ips() {
+	local line ep
+	echo "127.0.0.0/8"
+	echo "10.88.0.0/16"
+	echo "192.168.0.0/16"
+	echo "172.16.0.0/12"
+	_list_nodes | while IFS='|' read -r _id _n _pk ep _pt _wip _w _en; do
+		[[ -n "$ep" ]] && echo "$ep"
+	done
+}
+
+_flush_policy() {
+	local i
+	iptables -t mangle -D OUTPUT -j "$CHAIN" 2>/dev/null || true
+	iptables -t mangle -F "$CHAIN" 2>/dev/null || true
+	iptables -t mangle -X "$CHAIN" 2>/dev/null || true
+	for i in $(seq 0 31); do
+		ip rule del pref $((RULE_PREF + i)) 2>/dev/null || true
+		ip route flush table $((TABLE_BASE + i)) 2>/dev/null || true
+	done
+}
+
+_user_uids() {
+	local u
+	if [[ -f /root/usuarios.db ]]; then
+		while read -r u _; do
+			[[ -z "$u" || "$u" == \#* ]] && continue
+			id -u "$u" 2>/dev/null
+		done </root/usuarios.db
+	fi
+	awk -F: '$3>=1000 && $1!="nobody" {print $3}' /etc/passwd 2>/dev/null
+}
+
+_apply_frontend() {
+	local n i line id name pk ep pt wip w en mark tbl via pub priv port dev
+	_ensure_wg || { echo "Falta wireguard-tools."; return 1; }
+	_ensure_keys || return 1
+	n=$(_count_enabled)
+	if [[ "${n:-0}" -lt 1 ]]; then
+		echo "No hay nodos habilitados."
+		return 1
+	fi
+	pub=$(_pub)
+	priv=$(_priv)
+	port="${WG_PORT:-$WG_PORT_DEF}"
+	[[ -f "$NDIR/frontend.conf" ]] && . "$NDIR/frontend.conf"
+	port="${WG_PORT:-$WG_PORT_DEF}"
+
+	{
+		echo "[Interface]"
+		echo "Address = ${FE_WGIP}/24"
+		echo "ListenPort = $port"
+		echo "PrivateKey = $priv"
+		echo "Table = off"
+		_enabled_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
+			echo ""
+			echo "[Peer]"
+			echo "PublicKey = $pk"
+			echo "AllowedIPs = ${wip}/32"
+			[[ -n "$ep" && -n "$pt" ]] && echo "Endpoint = ${ep}:${pt}"
+			echo "PersistentKeepalive = 25"
+		done
+	} >"$WGCONF"
+	chmod 600 "$WGCONF"
+
+	wg-quick down "$WGIF" 2>/dev/null || true
+	wg-quick up "$WGIF" || { echo "Falló wg-quick up $WGIF"; return 1; }
+
+	_flush_policy
+	iptables -w -t mangle -N "$CHAIN" 2>/dev/null || iptables -w -t mangle -F "$CHAIN"
+	iptables -w -t mangle -C OUTPUT -j "$CHAIN" 2>/dev/null || iptables -w -t mangle -I OUTPUT 1 -j "$CHAIN"
+
+	# Conexiones ya clavadas: restaurar marca y no rebalancear
+	iptables -w -t mangle -A "$CHAIN" -m connmark ! --mark 0 -j CONNMARK --restore-mark
+	iptables -w -t mangle -A "$CHAIN" -m mark ! --mark 0 -j CONNMARK --save-mark
+	iptables -w -t mangle -A "$CHAIN" -m mark ! --mark 0 -j RETURN
+
+	_exclude_ips | sort -u | while read -r cidr; do
+		[[ -n "$cidr" ]] && iptables -w -t mangle -A "$CHAIN" -d "$cidr" -j RETURN
+	done
+
+	i=0
+	_enabled_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
+		mark=$((MARK_BASE + i))
+		tbl=$((TABLE_BASE + i))
+		ip route replace "${wip}/32" dev "$WGIF" 2>/dev/null || true
+		ip route replace default via "$wip" dev "$WGIF" table "$tbl"
+		ip rule add pref $((RULE_PREF + i)) fwmark "$mark" table "$tbl"
+		i=$((i + 1))
+	done
+
+	# UID SSH → mismo índice que udppy (uid % n)
+	i=0
+	_user_uids | sort -n | uniq | while read -r uid; do
+		[[ "$uid" =~ ^[0-9]+$ ]] || continue
+		[[ "$uid" -lt 1000 ]] && continue
+		mark=$((MARK_BASE + (uid % n)))
+		iptables -w -t mangle -A "$CHAIN" -m owner --uid-owner "$uid" -j MARK --set-mark "$mark"
+	done
+
+	# Paquetes que ya traen SO_MARK (udppy) y el resto de UID de clientes
+	iptables -w -t mangle -A "$CHAIN" -m mark --mark 0 -m owner --uid-owner 1000-59999 -j MARK --set-mark "$MARK_BASE"
+	iptables -w -t mangle -A "$CHAIN" -m mark ! --mark 0 -j CONNMARK --save-mark
+
+	_write_mark_file
+	touch "$FLAG"
+	echo frontend >"$ROLEF"
+
+	# systemd restore
+	cat >/etc/systemd/system/redlibre-nodos.service <<'UNIT'
+[Unit]
+Description=RedLibre — restaurar nodos de salida (WireGuard + política)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
+ExecStart=/bin/gestor-nodos-salida apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	systemctl daemon-reload
+	systemctl enable redlibre-nodos.service >/dev/null 2>&1 || true
+
+	# udppy: agregar --exit-mark-file a la unidad si ya está instalado
+	if [[ -f /etc/systemd/system/udppy-server.service ]]; then
+		if ! grep -q -- '--exit-mark-file' /etc/systemd/system/udppy-server.service; then
+			sed -i 's|^ExecStart=\(.*\)$|ExecStart=\1 --exit-mark-file /etc/RedLibre/nodos/udppy-mark.env|' \
+				/etc/systemd/system/udppy-server.service
+			systemctl daemon-reload 2>/dev/null || true
+		fi
+		if systemctl is-active --quiet udppy-server 2>/dev/null; then
+			systemctl restart udppy-server 2>/dev/null || true
+		fi
+	fi
+	echo -e "\033[1;32mEnrutamiento de salida activo ($n nodo(s)).\033[0m"
+}
+
+_apply_exit() {
+	local fe_pub fe_ep fe_port myip myid priv pub port dev
+	_ensure_wg || { echo "Falta wireguard-tools."; return 1; }
+	_ensure_keys || return 1
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	myid="${MY_ID:-1}"
+	myip="${MY_WG_IP:-$(_wg_ip_for_id "$myid")}"
+	port="${WG_PORT:-$WG_PORT_DEF}"
+	fe_pub="${FRONTEND_PUB:-}"
+	fe_ep="${FRONTEND_EP:-}"
+	fe_port="${FRONTEND_PORT:-$WG_PORT_DEF}"
+	dev=$(_detect_dev)
+	priv=$(_priv)
+	if [[ -z "$fe_pub" ]]; then
+		echo "Falta la clave pública del frontend (opción de emparejar)."
+		return 1
+	fi
+	{
+		echo "[Interface]"
+		echo "Address = ${myip}/24"
+		echo "ListenPort = $port"
+		echo "PrivateKey = $priv"
+		echo "Table = off"
+		echo "PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -C POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o $dev -j MASQUERADE; iptables -C FORWARD -i $WGIF -j ACCEPT 2>/dev/null || iptables -A FORWARD -i $WGIF -j ACCEPT; iptables -C FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sysctl -w net.netfilter.nf_conntrack_udp_timeout=180 >/dev/null 2>&1 || true"
+		echo "PostDown = iptables -t nat -D POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || true; iptables -D FORWARD -i $WGIF -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true"
+		echo ""
+		echo "[Peer]"
+		echo "PublicKey = $fe_pub"
+		echo "AllowedIPs = ${FE_WGIP}/32"
+		[[ -n "$fe_ep" ]] && echo "Endpoint = ${fe_ep}:${fe_port}"
+		echo "PersistentKeepalive = 25"
+	} >"$WGCONF"
+	chmod 600 "$WGCONF"
+	wg-quick down "$WGIF" 2>/dev/null || true
+	wg-quick up "$WGIF" || { echo "Falló wg-quick up"; return 1; }
+	echo exit >"$ROLEF"
+	touch "$FLAG"
+	echo -e "\033[1;32mNodo de salida activo ($myip). NAT en $dev.\033[0m"
+}
+
+_stop_all() {
+	_flush_policy
+	rm -f "$FLAG"
+	wg-quick down "$WGIF" 2>/dev/null || true
+	systemctl disable redlibre-nodos.service 2>/dev/null || true
+	echo -e "\033[1;32mEnrutamiento de nodos desactivado.\033[0m"
+}
+
+_human_bytes() {
+	awk -v b="${1:-0}" 'BEGIN{
+		if(b<1024){printf "%sB",b; exit}
+		if(b<1048576){printf "%.1fK",b/1024; exit}
+		if(b<1073741824){printf "%.1fM",b/1048576; exit}
+		printf "%.2fG",b/1073741824
+	}'
+}
+
+_node_status_line() {
+	local id="$1" name="$2" pk="$3" ep="$4" pt="$5" wip="$6" w="$7" en="$8"
+	local hs rx tx st age now
+	st="OFF"
+	[[ "$en" = "1" ]] && st="CFG"
+	if ping -c 1 -W 1 "$wip" >/dev/null 2>&1; then
+		st="UP"
+	elif [[ "$en" = "1" ]]; then
+		st="DOWN"
+	fi
+	hs=""; rx=""; tx=""
+	if command -v wg >/dev/null 2>&1 && [[ -n "$pk" ]]; then
+		now=$(date +%s)
+		hs=$(wg show "$WGIF" latest-handshakes 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
+		rx=$(wg show "$WGIF" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
+		tx=$(wg show "$WGIF" transfer 2>/dev/null | awk -v k="$pk" '$1==k {print $3}')
+		if [[ -n "$hs" && "$hs" != "0" ]]; then
+			age=$((now - hs))
+			if [[ "$age" -lt 180 ]]; then
+				st="UP"
+				hs="${age}s"
+			else
+				[[ "$st" != "UP" ]] && st="STALE"
+				hs="${age}s"
+			fi
+		else
+			hs="—"
+		fi
+	fi
+	printf '%-3s %-12s %-6s %-8s %8s/%-8s %4s %s\n' \
+		"$id" "${name:0:12}" "$st" "${hs:-—}" \
+		"$(_human_bytes "${rx:-0}")" "$(_human_bytes "${tx:-0}")" \
+		"${w:-1}" "${ep}:${pt}"
+}
+
+# ---------- menú ----------
+_guia() {
+	clear
+	tput setaf 7; tput setab 4; tput bold
+	printf '%36s%s%-8s\n' " Cómo usar nodos de salida "
+	tput sgr0
+	echo ""
+	_line
+	echo -e "\033[1;37mBrasil (este menú, rol FRONTEND)\033[0m"
+	echo "  1) Opción 2 — configurar este VPS como frontend."
+	echo "  2) En cada VPS de Argentina: RedLibre → 19 → 33 → opción 3 (nodo salida)."
+	echo "  3) Copie la clave pública que muestra Argentina."
+	echo "  4) Aquí, opción 4 — agregar nodo (IP pública AR, puerto WG, clave, peso)."
+	echo "  5) En Argentina, cargue la clave pública de Brasil (emparejar frontend)."
+	echo "  6) Opción 8 — aplicar enrutamiento. Los clientes siguen conectándose a Brasil."
+	echo ""
+	echo -e "\033[1;37mArgentina (rol NODO DE SALIDA)\033[0m"
+	echo "  Solo túnel WireGuard + NAT. No cree usuarios ahí."
+	echo "  Internet sale con la IP pública de ese VPS."
+	echo ""
+	echo -e "\033[1;37mQué hace el sistema\033[0m"
+	echo "  • Login, limitador, banda y udppy quedan en Brasil."
+	echo "  • Cada usuario (UID) se clava a un nodo: TCP y UDP (udppy) usan la misma marca."
+	echo "  • Las conexiones ya abiertas no se mueven al agregar/quitar nodos (CONNMARK)."
+	echo "  • Si un nodo cae, esas sesiones mueren; las nuevas usan los que siguen UP."
+	echo ""
+	echo -e "\033[1;37mEstado (opción 7)\033[0m"
+	echo "  UP/DOWN, antigüedad del handshake, bytes RX/TX (carga) y peso."
+	_line
+	_pause
+}
+
+_cfg_frontend() {
+	clear
+	echo -e "\033[1;32mEste servidor será FRONTEND (Brasil)\033[0m"
+	_ensure_wg || { echo -e "\033[1;31mInstale: dnf install -y wireguard-tools\033[0m"; _pause; return; }
+	_ensure_keys
+	echo -ne "\033[1;32mPuerto WireGuard [\033[1;37m$WG_PORT_DEF\033[1;32m]: \033[1;37m"
+	read -r p
+	p="${p//[^0-9]/}"
+	[[ -z "$p" ]] && p=$WG_PORT_DEF
+	mkdir -p "$NDIR"
+	echo "WG_PORT=$p" >"$NDIR/frontend.conf"
+	echo frontend >"$ROLEF"
+	echo ""
+	echo -e "\033[1;33mClave pública de este frontend (péguela en cada nodo Argentina):\033[0m"
+	echo -e "\033[1;37m$(_pub)\033[0m"
+	echo -e "\033[1;33mDirección WG: \033[1;37m$FE_WGIP\033[0m  \033[1;33mPuerto:\033[1;37m $p\033[0m"
+	_pause
+}
+
+_cfg_exit() {
+	clear
+	echo -e "\033[1;32mEste servidor será NODO DE SALIDA (Argentina)\033[0m"
+	_ensure_wg || { echo -e "\033[1;31mInstale: dnf install -y wireguard-tools\033[0m"; _pause; return; }
+	_ensure_keys
+	echo -ne "\033[1;32mID de este nodo (1–99) [\033[1;37m1\033[1;32m]: \033[1;37m"
+	read -r id
+	id="${id//[^0-9]/}"
+	[[ -z "$id" ]] && id=1
+	echo -ne "\033[1;32mPuerto WireGuard [\033[1;37m$WG_PORT_DEF\033[1;32m]: \033[1;37m"
+	read -r p
+	p="${p//[^0-9]/}"
+	[[ -z "$p" ]] && p=$WG_PORT_DEF
+	echo -ne "\033[1;32mClave pública del FRONTEND (Brasil):\033[1;37m "
+	read -r fepub
+	fepub="${fepub//[[:space:]]/}"
+	echo -ne "\033[1;32mIP pública del frontend (opcional, Enter=vacío):\033[1;37m "
+	read -r feep
+	feep="${feep//[[:space:]]/}"
+	mkdir -p "$NDIR"
+	cat >"$EXITCF" <<EOF
+MY_ID=$id
+MY_WG_IP=$(_wg_ip_for_id "$id")
+WG_PORT=$p
+FRONTEND_PUB=$fepub
+FRONTEND_EP=$feep
+FRONTEND_PORT=$WG_PORT_DEF
+EOF
+	echo exit >"$ROLEF"
+	echo ""
+	echo -e "\033[1;33mDatos para cargar en Brasil (opción 4 — agregar nodo):\033[0m"
+	echo -e "  ID:        \033[1;37m$id\033[0m"
+	echo -e "  WG IP:     \033[1;37m$(_wg_ip_for_id "$id")\033[0m"
+	echo -e "  Puerto:    \033[1;37m$p\033[0m"
+	echo -e "  Pubkey:    \033[1;37m$(_pub)\033[0m"
+	echo ""
+	if [[ -n "$fepub" ]]; then
+		_apply_exit
+	else
+		echo -e "\033[1;33mGuarde la pubkey del frontend y vuelva a aplicar (opción 8).\033[0m"
+	fi
+	_pause
+}
+
+_add_or_edit_node() {
+	local edit_id="${1:-}" cur id name pk ep pt wip w en
+	clear
+	if [[ -n "$edit_id" ]]; then
+		cur=$(_get_node "$edit_id")
+		[[ -z "$cur" ]] && { echo "No existe el ID $edit_id"; _pause; return; }
+		IFS='|' read -r id name pk ep pt wip w en <<<"$cur"
+		echo -e "\033[1;32mEditar nodo $id ($name)\033[0m"
+	else
+		echo -e "\033[1;32mAgregar nodo de salida\033[0m"
+		id=""; name=""; pk=""; ep=""; pt="$WG_PORT_DEF"; w="1"; en="1"
+	fi
+	echo -ne "\033[1;32mID (1–99) [\033[1;37m${id:-1}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" ]] && id="$x"; [[ -z "$id" ]] && id=1
+	echo -ne "\033[1;32mNombre [\033[1;37m${name:-ar$id}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && name="$x"; [[ -z "$name" ]] && name="ar$id"
+	echo -ne "\033[1;32mIP pública del nodo:\033[1;37m "
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && ep="$x"
+	[[ -z "$ep" ]] && { echo -e "\033[1;31mIP vacía.\033[0m"; _pause; return; }
+	echo -ne "\033[1;32mPuerto WG [\033[1;37m${pt:-$WG_PORT_DEF}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" ]] && pt="$x"; [[ -z "$pt" ]] && pt=$WG_PORT_DEF
+	echo -ne "\033[1;32mClave pública WireGuard del nodo:\033[1;37m "
+	read -r x; x="${x//[[:space:]]/}"; [[ -n "$x" ]] && pk="$x"
+	[[ -z "$pk" ]] && { echo -e "\033[1;31mClave vacía.\033[0m"; _pause; return; }
+	echo -ne "\033[1;32mPeso (1–100) [\033[1;37m${w:-1}\033[1;32m]: \033[1;37m"
+	read -r x; x="${x//[^0-9]/}"; [[ -n "$x" ]] && w="$x"; [[ -z "$w" || "$w" -lt 1 ]] && w=1
+	echo -ne "\033[1;32mHabilitado 1=sí 0=no [\033[1;37m${en:-1}\033[1;32m]: \033[1;37m"
+	read -r x; [[ "$x" = "0" || "$x" = "1" ]] && en="$x"; [[ -z "$en" ]] && en=1
+	wip=$(_wg_ip_for_id "$id")
+	_save_node_line "$id" "${id}|${name}|${pk}|${ep}|${pt}|${wip}|${w}|${en}"
+	echo frontend >"$ROLEF"
+	echo -e "\033[1;32mNodo $id ($name) guardado → $wip. Aplique con la opción 8.\033[0m"
+	_pause
+}
+
+_del_node() {
+	echo -ne "\033[1;32mID a quitar: \033[1;37m"
+	read -r id
+	id="${id//[^0-9]/}"
+	[[ -z "$id" ]] && return
+	[[ -f "$LISTF" ]] && grep -vE "^${id}\\|" "$LISTF" >"$LISTF.tmp" && mv "$LISTF.tmp" "$LISTF"
+	echo -e "\033[1;32mNodo $id eliminado. Aplique con la opción 8.\033[0m"
+	_pause
+}
+
+_show_status() {
+	clear
+	echo -e "\E[44;1;37m   Nodos de salida — estado y carga   \E[0m"
+	echo ""
+	echo -e "Rol: \033[1;33m$(_role | tr '[:lower:]' '[:upper:]')\033[0m   WG: \033[1;37m$WGIF\033[0m"
+	if [[ -f "$FLAG" ]]; then
+		echo -e "Enrutamiento: \033[1;32mACTIVO\033[0m"
+	else
+		echo -e "Enrutamiento: \033[1;31mINACTIVO\033[0m"
+	fi
+	[[ -f "$KEYPUB" ]] && echo -e "Pubkey local: \033[1;37m$(_pub)\033[0m"
+	echo ""
+	if [[ "$(_role)" = "exit" && -f "$EXITCF" ]]; then
+		. "$EXITCF"
+		echo -e "Este nodo: ID=$MY_ID  WG=$MY_WG_IP  puerto=$WG_PORT"
+		echo ""
+		command -v wg >/dev/null && wg show "$WGIF" 2>/dev/null
+		echo ""
+		_pause
+		return
+	fi
+	printf "\033[1;33m%-3s %-12s %-6s %-8s %8s/%-8s %4s %s\033[0m\n" \
+		"ID" "NOMBRE" "ESTADO" "HANDSH." "RX" "TX" "PESO" "ENDPOINT"
+	if [[ ! -f "$LISTF" ]] || [[ ! -s "$LISTF" ]]; then
+		echo "(sin nodos — use la opción 4)"
+	else
+		_list_nodes | while IFS='|' read -r id name pk ep pt wip w en; do
+			_node_status_line "$id" "$name" "$pk" "$ep" "$pt" "$wip" "$w" "$en"
+		done
+	fi
+	echo ""
+	echo -e "\033[1;37mUP\033[0m=túnel vivo  \033[1;33mDOWN\033[0m=sin ping  \033[1;36mSTALE\033[0m=handshake viejo  RX/TX=carga del túnel"
+	echo ""
+	_pause
+}
+
+# CLI
+case "${1-}" in
+	apply | restore)
+		r=$(_role)
+		if [[ "$r" = "exit" ]]; then
+			_apply_exit
+		else
+			_apply_frontend
+		fi
+		exit $?
+		;;
+	stop)
+		_stop_all
+		exit 0
+		;;
+	status)
+		_show_status
+		exit 0
+		;;
+	hook-user)
+		# No reaplicar WG (rompería sesiones). Los UID nuevos caen en la regla
+		# catch-all (primer nodo) hasta la próxima opción 8.
+		exit 0
+		;;
+esac
+
+[[ $EUID -eq 0 ]] || { echo -e "\033[1;31mEjecute como root.\033[0m"; exit 1; }
+
+while true; do
+	clear
+	r=$(_role)
+	[[ -z "$r" ]] && r="(sin rol)"
+	n=$(_count_enabled)
+	tput setaf 7; tput setab 4; tput bold
+	printf '%36s%s%-8s\n' " Nodos de salida (Brasil / Argentina) "
+	tput sgr0
+	echo ""
+	_line
+	echo -e "  Rol: \033[1;33m$r\033[0m   Nodos habilitados: \033[1;37m${n:-0}\033[0m"
+	if [[ -f "$FLAG" ]]; then
+		echo -e "  Enrutamiento: \033[1;32mACTIVO\033[0m"
+	else
+		echo -e "  Enrutamiento: \033[1;31mINACTIVO\033[0m"
+	fi
+	_line
+	echo ""
+	echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Cómo usar esta sección (reseña)"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Este VPS es FRONTEND (Brasil — login de clientes)"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Este VPS es NODO DE SALIDA (Argentina — NAT / IP local)"
+	echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Agregar nodo"
+	echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Editar nodo"
+	echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Quitar nodo"
+	echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Estado y carga de nodos"
+	echo -e "\033[1;31m[\033[1;36m8\033[1;31m]\033[1;33m Aplicar / activar enrutamiento"
+	echo -e "\033[1;31m[\033[1;36m9\033[1;31m]\033[1;33m Desactivar enrutamiento"
+	echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver"
+	echo ""
+	echo -ne "\033[1;32mOpción: \033[1;37m"
+	read -r op
+	case "$op" in
+		1) _guia ;;
+		2) _cfg_frontend ;;
+		3) _cfg_exit ;;
+		4) _add_or_edit_node ;;
+		5)
+			echo -ne "\033[1;32mID a editar: \033[1;37m"
+			read -r eid
+			_add_or_edit_node "${eid//[^0-9]/}"
+			;;
+		6) _del_node ;;
+		7) _show_status ;;
+		8)
+			if [[ "$(_role)" = "exit" ]]; then
+				_apply_exit
+			else
+				echo frontend >"$ROLEF"
+				_apply_frontend
+			fi
+			_pause
+			;;
+		9) _stop_all; _pause ;;
+		0 | 00 | "") exit 0 ;;
+		*) echo -e "\033[1;31mOpción no válida.\033[0m"; sleep 1 ;;
+	esac
+done

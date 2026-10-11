@@ -124,6 +124,7 @@ _exec_line() {
 	[[ "$VERBOSE" = "1" ]] && flags="$flags --verbose"
 	[[ "$NO_LINUX_TUNE" = "1" ]] && flags="$flags --no-linux-tune"
 	[[ "$NO_UVLOOP" = "1" ]] && flags="$flags --no-uvloop"
+	[[ -f /etc/RedLibre/nodos/udppy-mark.env ]] && flags="$flags --exit-mark-file /etc/RedLibre/nodos/udppy-mark.env"
 	printf '%s %s/udppy_server.py %s' "$py" "$UDPPY_DIR" "$flags"
 }
 
