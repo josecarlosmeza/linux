@@ -1,0 +1,561 @@
+#!/bin/bash
+#====================================================
+# Instalador liviano — nodo de salida RedLibre
+# No instala el panel (menú, usuarios, udppy).
+#
+#   wget -qO /tmp/nodo-salida https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/instalar-nodo-salida
+#   sed -i 's/\r$//' /tmp/nodo-salida
+#   bash /tmp/nodo-salida
+#
+# CLI: apply | verify | status | stop
+#====================================================
+set +e
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin${PATH:+:$PATH}"
+
+SELF_URL="https://raw.githubusercontent.com/josecarlosmeza/linux/main/Subir%20a%20otro%20Servidor/instalar-nodo-salida"
+BIN="/usr/local/sbin/nodo-salida"
+NDIR="/etc/RedLibre/nodos"
+ROLEF="$NDIR/role"
+KEYPRIV="$NDIR/wg-private.key"
+KEYPUB="$NDIR/wg-public.key"
+FLAG="$NDIR/enabled"
+EXITCF="$NDIR/exit.conf"
+WGIF="wg-rl"
+WGCONF="/etc/wireguard/${WGIF}.conf"
+UNIT="redlibre-nodo-salida.service"
+WG_PORT_DEF=51820
+FE_WGIP="10.88.0.1"
+
+_ok() { echo -e "  \033[1;32m[OK]\033[0m  $*"; }
+_fail() { echo -e "  \033[1;31m[FALLO]\033[0m $*"; }
+_warn() { echo -e "  \033[1;33m[AVISO]\033[0m $*"; }
+_info() { echo -e "  \033[1;37m[INFO]\033[0m $*"; }
+_pause() { echo -ne "\n\033[1;33m[ENTER]\033[0m "; read -r; }
+_line() { echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"; }
+
+_need_root() {
+	[[ $EUID -eq 0 ]] || { echo -e "\033[1;31mEjecute como root.\033[0m"; exit 1; }
+}
+
+_detect_dev() {
+	ip -4 route show default 0.0.0.0/0 2>/dev/null | awk '{print $5}' | head -1
+}
+
+_pub() { [[ -f "$KEYPUB" ]] && tr -d '\r\n' <"$KEYPUB"; }
+_priv() { [[ -f "$KEYPRIV" ]] && tr -d '\r\n' <"$KEYPRIV"; }
+_wg_ip_for_id() { printf '10.88.0.%s' $((10 + ${1:-1})); }
+
+_public_ip() {
+	local ip
+	for u in "https://ifconfig.me" "https://icanhazip.com" "https://api.ipify.org"; do
+		ip=$(curl -4 -fsS --max-time 4 "$u" 2>/dev/null | tr -d '[:space:]')
+		[[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && { echo "$ip"; return 0; }
+	done
+	return 1
+}
+
+_ensure_pkgs() {
+	local miss=0
+	command -v curl >/dev/null 2>&1 || miss=1
+	command -v iptables >/dev/null 2>&1 || miss=1
+	if [[ "$miss" = "1" ]]; then
+		if command -v dnf >/dev/null 2>&1; then
+			dnf install -y curl iptables iproute >/dev/null 2>&1
+		elif command -v yum >/dev/null 2>&1; then
+			yum install -y curl iptables iproute >/dev/null 2>&1
+		elif command -v apt-get >/dev/null 2>&1; then
+			DEBIAN_FRONTEND=noninteractive apt-get install -y curl iptables iproute2 >/dev/null 2>&1
+		fi
+	fi
+	if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
+		return 0
+	fi
+	echo -e "\033[1;33mInstalando wireguard-tools...\033[0m"
+	if command -v dnf >/dev/null 2>&1; then
+		dnf install -y wireguard-tools >/dev/null 2>&1
+	elif command -v yum >/dev/null 2>&1; then
+		yum install -y wireguard-tools >/dev/null 2>&1
+	elif command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
+		DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools >/dev/null 2>&1
+	fi
+	command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1
+}
+
+_ensure_keys() {
+	mkdir -p "$NDIR"
+	chmod 700 "$NDIR"
+	if [[ ! -f "$KEYPRIV" ]]; then
+		_ensure_pkgs || return 1
+		umask 077
+		wg genkey >"$KEYPRIV"
+		wg pubkey <"$KEYPRIV" >"$KEYPUB"
+	fi
+	[[ -s "$KEYPUB" ]] || wg pubkey <"$KEYPRIV" >"$KEYPUB"
+	chmod 600 "$KEYPRIV" 2>/dev/null || true
+	chmod 644 "$KEYPUB" 2>/dev/null || true
+}
+
+_install_self() {
+	mkdir -p /usr/local/sbin
+	if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" && -r "${BASH_SOURCE[0]}" ]]; then
+		case "${BASH_SOURCE[0]}" in
+			/dev/fd/* | /proc/self/fd/*) ;;
+			*)
+				cp -f "${BASH_SOURCE[0]}" "$BIN"
+				sed -i 's/\r$//' "$BIN" 2>/dev/null || true
+				chmod 755 "$BIN"
+				return 0
+				;;
+		esac
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		wget -qO "$BIN" "$SELF_URL"
+	else
+		curl -fsSL "$SELF_URL" -o "$BIN"
+	fi
+	sed -i 's/\r$//' "$BIN" 2>/dev/null || true
+	chmod 755 "$BIN"
+}
+
+_open_udp() {
+	local port="$1"
+	[[ -z "$port" ]] && return 0
+	if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+		firewall-cmd --permanent --add-port="${port}/udp" >/dev/null 2>&1 || true
+		firewall-cmd --reload >/dev/null 2>&1 || true
+	fi
+	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi 'Status: active'; then
+		ufw allow "${port}/udp" >/dev/null 2>&1 || true
+	fi
+	iptables -C INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null || \
+		iptables -I INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
+}
+
+_write_unit() {
+	cat >/etc/systemd/system/"$UNIT" <<EOF
+[Unit]
+Description=RedLibre — nodo de salida (WireGuard + NAT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
+ExecStart=${BIN} apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	systemctl daemon-reload
+	systemctl enable "$UNIT" >/dev/null 2>&1 || true
+}
+
+_apply() {
+	local fe_pub fe_ep fe_port myip myid priv port dev
+	_ensure_pkgs || { echo -e "\033[1;31mNo se pudo instalar wireguard-tools.\033[0m"; return 1; }
+	_ensure_keys || return 1
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	myid="${MY_ID:-1}"
+	myip="${MY_WG_IP:-$(_wg_ip_for_id "$myid")}"
+	port="${WG_PORT:-$WG_PORT_DEF}"
+	fe_pub="${FRONTEND_PUB:-}"
+	fe_ep="${FRONTEND_EP:-}"
+	fe_port="${FRONTEND_PORT:-$WG_PORT_DEF}"
+	dev=$(_detect_dev)
+	priv=$(_priv)
+	if [[ -z "$fe_pub" ]]; then
+		echo -e "\033[1;31mFalta la clave pública del servidor de acceso.\033[0m"
+		return 1
+	fi
+	if [[ -z "$dev" ]]; then
+		echo -e "\033[1;31mNo hay interfaz de salida (ruta default).\033[0m"
+		return 1
+	fi
+	mkdir -p /etc/sysctl.d
+	printf 'net.ipv4.ip_forward=1\n' >/etc/sysctl.d/99-redlibre-nodo.conf
+	sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+	sysctl -w net.netfilter.nf_conntrack_udp_timeout=180 >/dev/null 2>&1 || true
+	{
+		echo "[Interface]"
+		echo "Address = ${myip}/24"
+		echo "ListenPort = $port"
+		echo "PrivateKey = $priv"
+		echo "Table = off"
+		echo "PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -C POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o $dev -j MASQUERADE; iptables -C FORWARD -i $WGIF -j ACCEPT 2>/dev/null || iptables -A FORWARD -i $WGIF -j ACCEPT; iptables -C FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sysctl -w net.netfilter.nf_conntrack_udp_timeout=180 >/dev/null 2>&1 || true"
+		echo "PostDown = iptables -t nat -D POSTROUTING -o $dev -j MASQUERADE 2>/dev/null || true; iptables -D FORWARD -i $WGIF -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o $WGIF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true"
+		echo ""
+		echo "[Peer]"
+		echo "PublicKey = $fe_pub"
+		echo "AllowedIPs = ${FE_WGIP}/32"
+		[[ -n "$fe_ep" ]] && echo "Endpoint = ${fe_ep}:${fe_port}"
+		echo "PersistentKeepalive = 25"
+	} >"$WGCONF"
+	chmod 600 "$WGCONF"
+	_open_udp "$port"
+	wg-quick down "$WGIF" 2>/dev/null || true
+	if ! wg-quick up "$WGIF"; then
+		echo -e "\033[1;31mFalló wg-quick up $WGIF. Revise: journalctl -u wg-quick@${WGIF}\033[0m"
+		return 1
+	fi
+	echo exit >"$ROLEF"
+	touch "$FLAG"
+	_install_self
+	_write_unit
+	echo -e "\033[1;32mNodo de salida activo ($myip). NAT en $dev.\033[0m"
+}
+
+_stop() {
+	rm -f "$FLAG"
+	wg-quick down "$WGIF" 2>/dev/null || true
+	systemctl disable "$UNIT" 2>/dev/null || true
+	echo -e "\033[1;32mNodo de salida desactivado.\033[0m"
+}
+
+_show_datos() {
+	local id port wip pub pip
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	id="${MY_ID:-?}"
+	port="${WG_PORT:-$WG_PORT_DEF}"
+	wip="${MY_WG_IP:-$(_wg_ip_for_id "$id")}"
+	pub=$(_pub)
+	pip=$(_public_ip)
+	_line
+	echo -e "\033[1;33mDatos para cargar en el servidor de acceso (menú 19 → 33 → 4):\033[0m"
+	echo -e "  ID:        \033[1;37m$id\033[0m"
+	echo -e "  Nombre:    \033[1;37m(elija país/ciudad, ej. ar-bue)\033[0m"
+	echo -e "  IP pública:\033[1;37m ${pip:-<la IP de este VPS>}\033[0m"
+	echo -e "  Puerto WG: \033[1;37m$port\033[0m"
+	echo -e "  WG IP:     \033[1;37m$wip\033[0m"
+	echo -e "  Pubkey:    \033[1;37m${pub:-<sin clave>}\033[0m"
+	_line
+}
+
+_handshake_age() {
+	local pk hs now
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	pk="${FRONTEND_PUB:-}"
+	[[ -z "$pk" ]] && return 1
+	hs=$(wg show "$WGIF" latest-handshakes 2>/dev/null | awk -v k="$pk" '$1==k {print $2}')
+	[[ -z "$hs" || "$hs" = "0" ]] && return 1
+	now=$(date +%s)
+	echo $((now - hs))
+}
+
+_verify() {
+	local fails=0 warns=0 wait_s="${1:-12}" age pingms dev port myip hs_ok=0
+	clear
+	tput setaf 7; tput setab 4; tput bold
+	printf '%36s%s%-8s\n' " Diagnóstico del nodo de salida "
+	tput sgr0
+	echo ""
+	_line
+
+	if [[ $EUID -eq 0 ]]; then _ok "Ejecutando como root"
+	else _fail "No es root"; fails=$((fails + 1)); fi
+
+	if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
+		_ok "wireguard-tools instalado ($(wg --version 2>/dev/null | head -1))"
+	else
+		_fail "Falta wireguard-tools"; fails=$((fails + 1))
+	fi
+
+	if [[ -s "$KEYPRIV" && -s "$KEYPUB" ]]; then
+		_ok "Claves WireGuard en $NDIR"
+	else
+		_fail "No hay claves en $NDIR"; fails=$((fails + 1))
+	fi
+
+	if [[ -f "$EXITCF" ]]; then
+		. "$EXITCF"
+		_ok "Configuración guardada (ID=${MY_ID:-?} puerto=${WG_PORT:-?})"
+		[[ -n "$FRONTEND_PUB" ]] || { _fail "Falta pubkey del servidor de acceso"; fails=$((fails + 1)); }
+	else
+		_fail "No existe $EXITCF — ejecute la instalación"; fails=$((fails + 1))
+	fi
+
+	dev=$(_detect_dev)
+	if [[ -n "$dev" ]]; then _ok "Interfaz pública: $dev"
+	else _fail "Sin ruta default"; fails=$((fails + 1)); fi
+
+	if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = "1" ]]; then
+		_ok "ip_forward = 1"
+	else
+		_fail "ip_forward desactivado (NAT no funciona)"; fails=$((fails + 1))
+	fi
+
+	if [[ -n "$dev" ]] && iptables -t nat -C POSTROUTING -o "$dev" -j MASQUERADE 2>/dev/null; then
+		_ok "MASQUERADE en $dev"
+	else
+		_fail "Falta MASQUERADE en NAT"; fails=$((fails + 1))
+	fi
+
+	if ip link show "$WGIF" >/dev/null 2>&1; then
+		myip=$(ip -4 -o addr show "$WGIF" 2>/dev/null | awk '{print $4}' | head -1)
+		_ok "Interfaz $WGIF arriba (${myip:-sin IPv4})"
+	else
+		_fail "Interfaz $WGIF no está activa"; fails=$((fails + 1))
+	fi
+
+	port="${WG_PORT:-$WG_PORT_DEF}"
+	if ss -uln 2>/dev/null | grep -qE ":${port}[[:space:]]" || netstat -uln 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
+		_ok "Puerto UDP $port en escucha"
+	else
+		_warn "No se ve UDP $port en escucha (puede ser normal si wg usa raw)"
+		warns=$((warns + 1))
+	fi
+
+	if [[ -x "$BIN" ]]; then _ok "Comando instalado: $BIN"
+	else _warn "Falta $BIN (se copia al aplicar)"; warns=$((warns + 1)); fi
+
+	if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+		_ok "Servicio $UNIT habilitado (arranca al reiniciar)"
+	else
+		_warn "Servicio de arranque no habilitado"; warns=$((warns + 1))
+	fi
+
+	echo ""
+	echo -e "\033[1;37mConexión con el servidor de acceso\033[0m"
+	if [[ -n "${FRONTEND_EP:-}" ]]; then
+		_info "Endpoint configurado: ${FRONTEND_EP}:${FRONTEND_PORT:-$WG_PORT_DEF}"
+	else
+		_warn "Sin IP del servidor de acceso: este nodo espera que el acceso inicie el túnel."
+		warns=$((warns + 1))
+	fi
+
+	if ip link show "$WGIF" >/dev/null 2>&1 && [[ -n "${FRONTEND_PUB:-}" ]]; then
+		echo -e "  Esperando handshake hasta ${wait_s}s..."
+		local i
+		for i in $(seq 1 "$wait_s"); do
+			age=$(_handshake_age) && { hs_ok=1; break; }
+			sleep 1
+		done
+		if [[ "$hs_ok" = "1" ]]; then
+			if [[ "$age" -lt 180 ]]; then
+				_ok "Handshake con el servidor de acceso (hace ${age}s)"
+			else
+				_fail "Handshake viejo (${age}s). El túnel está caído o el acceso no aplica."
+				fails=$((fails + 1))
+			fi
+		else
+			_fail "Sin handshake. El servidor de acceso aún no tiene este nodo, o el UDP está bloqueado."
+			fails=$((fails + 1))
+		fi
+
+		if ping -c 2 -W 2 "$FE_WGIP" >/dev/null 2>&1; then
+			pingms=$(ping -c 1 -W 2 "$FE_WGIP" 2>/dev/null | awk -F'time=' '/time=/{print $2}' | head -1)
+			_ok "Ping a $FE_WGIP (servidor de acceso) ${pingms}"
+		else
+			_fail "No hay ping a $FE_WGIP. Cargue este nodo en el acceso y use la opción 8."
+			fails=$((fails + 1))
+		fi
+
+		if command -v wg >/dev/null 2>&1; then
+			echo ""
+			wg show "$WGIF" 2>/dev/null
+		fi
+	else
+		_fail "No se puede probar el túnel (interfaz o pubkey ausente)."
+		fails=$((fails + 1))
+	fi
+
+	echo ""
+	_line
+	if [[ "$fails" -eq 0 ]]; then
+		echo -e "\033[1;32mRESULTADO: instalación correcta y conexión con el servidor de acceso OK.\033[0m"
+	elif ip link show "$WGIF" >/dev/null 2>&1 && [[ -f "$FLAG" ]]; then
+		echo -e "\033[1;33mRESULTADO: el nodo está instalado, pero la conexión con el acceso aún no cierra.\033[0m"
+		echo -e "  1) En el servidor de acceso: menú 19 → 33 → 4 (agregar este nodo)."
+		echo -e "  2) Allí, opción 8 (aplicar)."
+		echo -e "  3) Vuelva aquí y elija verificar de nuevo."
+	else
+		echo -e "\033[1;31mRESULTADO: la instalación no está completa. Use la opción de instalar/configurar.\033[0m"
+	fi
+	_show_datos
+	return "$fails"
+}
+
+_wizard() {
+	local id p fepub feep feport cur_id cur_p cur_pub cur_ep
+	clear
+	echo -e "\033[1;32mInstalar / configurar nodo de salida\033[0m"
+	echo -e "Este VPS solo hará NAT. No se instala el panel RedLibre.\n"
+	_ensure_pkgs || { echo -e "\033[1;31mNo se pudo instalar wireguard-tools.\033[0m"; _pause; return; }
+	_ensure_keys || { echo -e "\033[1;31mNo se pudieron crear claves.\033[0m"; _pause; return; }
+
+	cur_id=1; cur_p=$WG_PORT_DEF; cur_pub=""; cur_ep=""; feport=$WG_PORT_DEF
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	cur_id="${MY_ID:-1}"
+	cur_p="${WG_PORT:-$WG_PORT_DEF}"
+	cur_pub="${FRONTEND_PUB:-}"
+	cur_ep="${FRONTEND_EP:-}"
+	feport="${FRONTEND_PORT:-$WG_PORT_DEF}"
+
+	echo -e "Clave pública de ESTE nodo (péguela en el servidor de acceso):"
+	echo -e "\033[1;37m$(_pub)\033[0m"
+	echo ""
+
+	echo -ne "\033[1;32mID de este nodo (1–99) [\033[1;37m$cur_id\033[1;32m]: \033[1;37m"
+	read -r id
+	id="${id//[^0-9]/}"
+	[[ -z "$id" ]] && id="$cur_id"
+
+	echo -ne "\033[1;32mPuerto WireGuard [\033[1;37m$cur_p\033[1;32m]: \033[1;37m"
+	read -r p
+	p="${p//[^0-9]/}"
+	[[ -z "$p" ]] && p="$cur_p"
+
+	echo -ne "\033[1;32mClave pública del servidor de ACCESO:\033[1;37m "
+	read -r fepub
+	fepub="${fepub//[[:space:]]/}"
+	[[ -z "$fepub" ]] && fepub="$cur_pub"
+	if [[ -z "$fepub" ]]; then
+		echo -e "\033[1;31mHace falta la pubkey del servidor de acceso (menú 19 → 33 → 2).\033[0m"
+		_pause
+		return
+	fi
+
+	echo -ne "\033[1;32mIP pública del servidor de acceso [\033[1;37m${cur_ep:-obligatoria para iniciar el túnel}\033[1;32m]: \033[1;37m"
+	read -r feep
+	feep="${feep//[[:space:]]/}"
+	[[ -z "$feep" ]] && feep="$cur_ep"
+
+	echo -ne "\033[1;32mPuerto WG del servidor de acceso [\033[1;37m$feport\033[1;32m]: \033[1;37m"
+	read -r x
+	x="${x//[^0-9]/}"
+	[[ -n "$x" ]] && feport="$x"
+
+	mkdir -p "$NDIR"
+	cat >"$EXITCF" <<EOF
+MY_ID=$id
+MY_WG_IP=$(_wg_ip_for_id "$id")
+WG_PORT=$p
+FRONTEND_PUB=$fepub
+FRONTEND_EP=$feep
+FRONTEND_PORT=$feport
+EOF
+	echo exit >"$ROLEF"
+	echo ""
+	if _apply; then
+		_show_datos
+		echo -ne "\033[1;32m¿Ya cargó este nodo en el servidor de acceso y aplicó (opción 8)? [s/N]: \033[1;37m"
+		read -r yn
+		if [[ "$yn" = "s" || "$yn" = "S" || "$yn" = "y" || "$yn" = "Y" ]]; then
+			_verify 15
+		else
+			echo -e "\033[1;33mCuando lo cargue en el acceso, vuelva y use «Verificar instalación y conexión».\033[0m"
+		fi
+	fi
+	_pause
+}
+
+_status() {
+	clear
+	echo -e "\E[44;1;37m   Estado del nodo de salida   \E[0m"
+	echo ""
+	if [[ -f "$FLAG" ]]; then
+		echo -e "Enrutamiento: \033[1;32mACTIVO\033[0m"
+	else
+		echo -e "Enrutamiento: \033[1;31mINACTIVO\033[0m"
+	fi
+	[[ -f "$EXITCF" ]] && . "$EXITCF"
+	echo -e "ID=${MY_ID:-?}  WG=${MY_WG_IP:-?}  puerto=${WG_PORT:-?}"
+	[[ -f "$KEYPUB" ]] && echo -e "Pubkey local: \033[1;37m$(_pub)\033[0m"
+	echo ""
+	if command -v wg >/dev/null 2>&1; then
+		wg show "$WGIF" 2>/dev/null || echo "(interfaz $WGIF no activa)"
+	fi
+	echo ""
+	_pause
+}
+
+_guia() {
+	clear
+	echo -e "\033[1;37mNodo de salida (instalación liviana)\033[0m"
+	_line
+	echo "  Este script NO instala el panel RedLibre."
+	echo "  Solo WireGuard + NAT para que internet salga por este VPS."
+	echo ""
+	echo "  En el servidor de acceso (donde se conectan los clientes):"
+	echo "    menú 19 → 33 → 2  (anote pubkey e IP)"
+	echo "    menú 19 → 33 → 4  (agregue este nodo)"
+	echo "    menú 19 → 33 → 8  (aplicar)"
+	echo ""
+	echo "  En este VPS:"
+	echo "    1) Instalar / configurar"
+	echo "    2) Verificar (diagnóstico + ping al acceso)"
+	echo ""
+	echo "  Después:  nodo-salida   (menú)   o   nodo-salida verify"
+	_line
+	_pause
+}
+
+case "${1-}" in
+	apply | restore)
+		_need_root
+		_apply
+		exit $?
+		;;
+	verify | check | diag)
+		_need_root
+		_verify 15
+		exit $?
+		;;
+	status)
+		_status
+		exit 0
+		;;
+	stop)
+		_need_root
+		_stop
+		exit 0
+		;;
+	-h | --help)
+		sed -n '2,12p' "$0" 2>/dev/null || true
+		exit 0
+		;;
+esac
+
+_need_root
+while true; do
+	clear
+	tput setaf 7; tput setab 4; tput bold
+	printf '%36s%s%-8s\n' " Nodo de salida (instalación liviana) "
+	tput sgr0
+	echo ""
+	_line
+	if [[ -f "$FLAG" ]]; then
+		echo -e "  Estado: \033[1;32mACTIVO\033[0m   comando: \033[1;37mnodo-salida\033[0m"
+	else
+		echo -e "  Estado: \033[1;31mSIN INSTALAR / INACTIVO\033[0m"
+	fi
+	_line
+	echo ""
+	echo -e "\033[1;31m[\033[1;36m1\033[1;31m]\033[1;33m Cómo usar"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m]\033[1;33m Instalar / configurar este nodo"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m]\033[1;33m Verificar instalación y conexión con el acceso"
+	echo -e "\033[1;31m[\033[1;36m4\033[1;31m]\033[1;33m Ver estado (WireGuard)"
+	echo -e "\033[1;31m[\033[1;36m5\033[1;31m]\033[1;33m Reaplicar túnel y NAT"
+	echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Desactivar nodo"
+	echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Salir"
+	echo ""
+	echo -ne "\033[1;32mOpción: \033[1;37m"
+	read -r op
+	case "$op" in
+		1) _guia ;;
+		2) _wizard ;;
+		3) _verify 15; _pause ;;
+		4) _status ;;
+		5)
+			_apply
+			_pause
+			;;
+		6)
+			_stop
+			_pause
+			;;
+		0 | 00 | "") exit 0 ;;
+		*) echo -e "\033[1;31mOpción no válida.\033[0m"; sleep 1 ;;
+	esac
+done
