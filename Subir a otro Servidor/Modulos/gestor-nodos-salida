@@ -96,6 +96,113 @@ _ensure_wg() {
 	_ensure_wg_kmod
 }
 
+IPT_MODE="ipt"
+
+_ipt_probe() {
+	local need_owner="${1:-0}"
+	iptables -w -t mangle -N RL_IPT_PROBE 2>/dev/null || iptables -w -t mangle -F RL_IPT_PROBE 2>/dev/null || return 1
+	if ! iptables -w -t mangle -A RL_IPT_PROBE -m mark --mark 1 -j RETURN >/dev/null 2>&1; then
+		iptables -w -t mangle -F RL_IPT_PROBE 2>/dev/null
+		iptables -w -t mangle -X RL_IPT_PROBE 2>/dev/null
+		return 1
+	fi
+	if [[ "$need_owner" = "1" ]]; then
+		if ! iptables -w -t mangle -A RL_IPT_PROBE -m owner --uid-owner 0 -j RETURN >/dev/null 2>&1; then
+			iptables -w -t mangle -F RL_IPT_PROBE 2>/dev/null
+			iptables -w -t mangle -X RL_IPT_PROBE 2>/dev/null
+			return 1
+		fi
+	fi
+	iptables -w -t mangle -F RL_IPT_PROBE 2>/dev/null
+	iptables -w -t mangle -X RL_IPT_PROBE 2>/dev/null
+	return 0
+}
+
+_ipt_try_legacy() {
+	local leg="/usr/sbin/iptables-legacy"
+	[[ -x "$leg" ]] || return 1
+	if command -v alternatives >/dev/null 2>&1; then
+		alternatives --set iptables "$leg" >/dev/null 2>&1 || true
+	elif command -v update-alternatives >/dev/null 2>&1; then
+		update-alternatives --set iptables "$leg" >/dev/null 2>&1 || true
+	fi
+}
+
+_ensure_iptables() {
+	local ver_major="" m
+	[[ -f /etc/os-release ]] && . /etc/os-release && ver_major="${VERSION_ID%%.*}"
+	if command -v dnf >/dev/null 2>&1; then
+		dnf install -y iptables iptables-nft nftables >/dev/null 2>&1 || true
+		dnf install -y iptables-legacy >/dev/null 2>&1 || true
+		# No instalar kernel-modules-extra aquí: en Alma 8/10 instala OTRO kernel
+		# y los módulos siguen faltando hasta el reboot.
+	elif command -v yum >/dev/null 2>&1; then
+		yum install -y iptables iptables-nft nftables >/dev/null 2>&1 || true
+	elif command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y iptables nftables \
+			"linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || \
+			DEBIAN_FRONTEND=noninteractive apt-get install -y iptables nftables >/dev/null 2>&1 || true
+		DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-legacy >/dev/null 2>&1 || true
+	fi
+	# Un módulo por llamada: modprobe no acepta varios nombres.
+	for m in nf_tables nft_compat nft_ct nft_meta nft_nat nft_masq nft_counter \
+		x_tables xt_connmark xt_mark xt_owner xt_nat xt_tcpudp \
+		iptable_mangle iptable_nat iptable_filter nf_nat nf_conntrack; do
+		modprobe "$m" >/dev/null 2>&1 || true
+	done
+	if _ipt_probe 1; then
+		IPT_MODE="ipt"
+		return 0
+	fi
+	if [[ -z "$ver_major" || "$ver_major" -lt 10 ]]; then
+		echo -e "\033[1;33miptables-nft no carga owner. Probando iptables-legacy...\033[0m"
+		_ipt_try_legacy
+		if _ipt_probe 1; then
+			IPT_MODE="ipt"
+			return 0
+		fi
+	fi
+	if command -v nft >/dev/null 2>&1; then
+		IPT_MODE="nft"
+		echo -e "\033[1;33mEste kernel no tiene xt_owner/xt_mark (Alma 10). Usando nftables.\033[0m"
+		return 0
+	fi
+	echo -e "\033[1;31mNo hay iptables owner ni nft. Instale nftables o reinicie el kernel nuevo.\033[0m"
+	echo -e "  Kernel en uso: \033[1;37m$(uname -r)\033[0m"
+	return 1
+}
+
+_nft_flush() {
+	nft delete table ip redlibre_salida 2>/dev/null || true
+}
+
+_nft_apply_policy() {
+	local n="$1" uid mark ifc id name pk ep pt wip w en cidr
+	command -v nft >/dev/null 2>&1 || { echo "Falta nftables."; return 1; }
+	_nft_flush
+	nft add table ip redlibre_salida
+	nft add chain ip redlibre_salida out '{ type route hook output priority mangle; policy accept; }'
+	nft add chain ip redlibre_salida natp '{ type nat hook postrouting priority srcnat; policy accept; }'
+	nft add rule ip redlibre_salida out ct mark != 0 meta mark set ct mark
+	nft add rule ip redlibre_salida out meta mark != 0 ct mark set mark
+	nft add rule ip redlibre_salida out meta mark != 0 return
+	while read -r cidr; do
+		[[ -n "$cidr" ]] && nft add rule ip redlibre_salida out ip daddr "$cidr" return
+	done < <(_exclude_ips | sort -u)
+	while read -r uid; do
+		[[ "$uid" =~ ^[0-9]+$ ]] || continue
+		[[ "$uid" -lt 1000 ]] && continue
+		mark=$((MARK_BASE + (uid % n)))
+		nft add rule ip redlibre_salida out meta skuid "$uid" meta mark set "$mark"
+	done < <(_user_uids | sort -n | uniq)
+	nft add rule ip redlibre_salida out meta mark != 0 ct mark set mark
+	while IFS='|' read -r id name pk ep pt wip w en; do
+		ifc=$(_wg_if_for_id "$id")
+		nft add rule ip redlibre_salida natp oifname "$ifc" snat to "$FE_WGIP"
+	done < <(_enabled_nodes)
+	echo -e "\033[1;32mPolítica nftables aplicada.\033[0m"
+}
+
 _ensure_keys() {
 	mkdir -p "$NDIR"
 	chmod 700 "$NDIR"
@@ -216,6 +323,7 @@ _flush_policy() {
 	iptables -t mangle -D OUTPUT -j "$CHAIN" 2>/dev/null || true
 	iptables -t mangle -F "$CHAIN" 2>/dev/null || true
 	iptables -t mangle -X "$CHAIN" 2>/dev/null || true
+	_nft_flush
 	_flush_nat_wg
 	for i in $(seq 0 31); do
 		ip rule del pref $((RULE_PREF + i)) 2>/dev/null || true
@@ -237,6 +345,7 @@ _user_uids() {
 _apply_frontend() {
 	local n i line id name pk ep pt wip w en mark tbl via pub priv port dev
 	_ensure_wg || { echo "Falta wireguard-tools."; return 1; }
+	_ensure_iptables || return 1
 	_ensure_keys || return 1
 	n=$(_count_enabled)
 	if [[ "${n:-0}" -lt 1 ]]; then
@@ -281,11 +390,16 @@ _apply_frontend() {
 		ip route replace "${wip}/32" dev "$ifc" 2>/dev/null || true
 		ip route replace default dev "$ifc" table "$tbl"
 		ip rule add pref $((RULE_PREF + i)) fwmark "$mark" table "$tbl"
-		iptables -w -t nat -C POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP" 2>/dev/null || \
-			iptables -w -t nat -A POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP"
+		if [[ "$IPT_MODE" != "nft" ]]; then
+			iptables -w -t nat -C POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP" 2>/dev/null || \
+				iptables -w -t nat -A POSTROUTING -o "$ifc" -j SNAT --to-source "$FE_WGIP"
+		fi
 		i=$((i + 1))
 	done
 
+	if [[ "$IPT_MODE" = "nft" ]]; then
+		_nft_apply_policy "$n" || return 1
+	else
 	iptables -w -t mangle -N "$CHAIN" 2>/dev/null || iptables -w -t mangle -F "$CHAIN"
 	iptables -w -t mangle -C OUTPUT -j "$CHAIN" 2>/dev/null || iptables -w -t mangle -I OUTPUT 1 -j "$CHAIN"
 
@@ -307,9 +421,9 @@ _apply_frontend() {
 		iptables -w -t mangle -A "$CHAIN" -m owner --uid-owner "$uid" -j MARK --set-mark "$mark"
 	done
 
-	# Paquetes que ya traen SO_MARK (udppy) y el resto de UID de clientes
-	iptables -w -t mangle -A "$CHAIN" -m mark --mark 0 -m owner --uid-owner 1000-59999 -j MARK --set-mark "$MARK_BASE"
+	# udppy ya trae SO_MARK. Sin rango 1000-59999: iptables-nft 1.8 no lo acepta.
 	iptables -w -t mangle -A "$CHAIN" -m mark ! --mark 0 -j CONNMARK --save-mark
+	fi
 
 	_write_mark_file
 	touch "$FLAG"
