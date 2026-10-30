@@ -31,6 +31,7 @@ _hcr_load_conf() {
     TARGET_SSH_IP="$TARGET_SSH_IP_DEFAULT"
     TARGET_SSH_PORT="$TARGET_SSH_PORT_DEFAULT"
     DIAG_INTERVAL="0"
+    STATS_INTERVAL="0"
     MAX_SESSIONS_PER_IP="0"
     MAX_SESSIONS="0"
     MAX_CONNECTIONS="0"
@@ -45,6 +46,7 @@ _hcr_load_conf() {
     TARGET_SSH_IP="${TARGET_SSH_IP:-$TARGET_SSH_IP_DEFAULT}"
     TARGET_SSH_PORT="${TARGET_SSH_PORT:-$TARGET_SSH_PORT_DEFAULT}"
     DIAG_INTERVAL="${DIAG_INTERVAL:-0}"
+    STATS_INTERVAL="${STATS_INTERVAL:-0}"
     MAX_SESSIONS_PER_IP="${MAX_SESSIONS_PER_IP:-0}"
     MAX_SESSIONS="${MAX_SESSIONS:-0}"
     MAX_CONNECTIONS="${MAX_CONNECTIONS:-0}"
@@ -61,6 +63,7 @@ DOWNLOAD_POLL_TIMEOUT=$DOWNLOAD_POLL_TIMEOUT
 TARGET_SSH_IP=$TARGET_SSH_IP
 TARGET_SSH_PORT=$TARGET_SSH_PORT
 DIAG_INTERVAL=$DIAG_INTERVAL
+STATS_INTERVAL=$STATS_INTERVAL
 MAX_SESSIONS_PER_IP=$MAX_SESSIONS_PER_IP
 MAX_SESSIONS=$MAX_SESSIONS
 MAX_CONNECTIONS=$MAX_CONNECTIONS
@@ -133,6 +136,7 @@ _hcr_run_install() {
     # Opciones nuevas (solo se pasan si estan activas; el instalador
     # vuelve a los valores por defecto cuando no se mencionan).
     [[ "${DIAG_INTERVAL:-0}" != "0" ]] && args+=(--diagnostics-interval "$DIAG_INTERVAL")
+    [[ "${STATS_INTERVAL:-0}" != "0" ]] && args+=(--session-stats-interval "$STATS_INTERVAL")
     [[ "${MAX_SESSIONS_PER_IP:-0}" != "0" ]] && args+=(--max-sessions-per-ip "$MAX_SESSIONS_PER_IP")
     [[ "${MAX_SESSIONS:-0}" != "0" ]] && args+=(--max-sessions "$MAX_SESSIONS")
     [[ "${MAX_CONNECTIONS:-0}" != "0" ]] && args+=(--max-connections "$MAX_CONNECTIONS")
@@ -443,6 +447,12 @@ _hcr_do_advanced() {
         if [[ "$ans" == "0" || "$ans" =~ ^[0-9]+(s|m)$ ]]; then DIAG_INTERVAL="$ans"
         else echo -e "\033[1;31mValor invalido; se conserva $DIAG_INTERVAL.\033[0m"; fi
     fi
+    echo -ne "\033[1;32mEstadísticas de sesión (0, o ej. 30s) [\033[1;37m$STATS_INTERVAL\033[1;32m]: \033[1;37m"
+    read -r ans; ans="${ans//[[:space:]]/}"
+    if [[ -n "$ans" ]]; then
+        if [[ "$ans" == "0" || "$ans" =~ ^[0-9]+(s|m)$ ]]; then STATS_INTERVAL="$ans"
+        else echo -e "\033[1;31mValor invalido; se conserva $STATS_INTERVAL.\033[0m"; fi
+    fi
     local lbl var
     for lbl in "Limite de sesiones por IP:MAX_SESSIONS_PER_IP" "Limite total de sesiones:MAX_SESSIONS" "Limite de conexiones/solicitudes:MAX_CONNECTIONS"; do
         var="${lbl##*:}"
@@ -456,7 +466,7 @@ _hcr_do_advanced() {
     _hcr_save_conf
     _hcr_run_install || true
     echo -e "\033[1;32mEstado: $(_hcr_status_text)\033[0m"
-    [[ "$DIAG_INTERVAL" != "0" ]] && echo -e "\033[1;37mLogs de diagnostico: journalctl -u ${SERVICE_NAME} -f\033[0m"
+    [[ "$DIAG_INTERVAL" != "0" || "$STATS_INTERVAL" != "0" ]] && echo -e "\033[1;37mLogs de diagnostico y estadisticas: journalctl -u ${SERVICE_NAME} -f\033[0m"
     _hcr_pause
 }
 
