@@ -30,6 +30,10 @@ _hcr_load_conf() {
     DOWNLOAD_POLL_TIMEOUT="$POLL_DEFAULT"
     TARGET_SSH_IP="$TARGET_SSH_IP_DEFAULT"
     TARGET_SSH_PORT="$TARGET_SSH_PORT_DEFAULT"
+    DIAG_INTERVAL="0"
+    MAX_SESSIONS_PER_IP="0"
+    MAX_SESSIONS="0"
+    MAX_CONNECTIONS="0"
     if [[ -f "$CONF_FILE" ]]; then
         # shellcheck disable=SC1090
         . "$CONF_FILE"
@@ -40,6 +44,10 @@ _hcr_load_conf() {
     DOWNLOAD_POLL_TIMEOUT="${DOWNLOAD_POLL_TIMEOUT:-$POLL_DEFAULT}"
     TARGET_SSH_IP="${TARGET_SSH_IP:-$TARGET_SSH_IP_DEFAULT}"
     TARGET_SSH_PORT="${TARGET_SSH_PORT:-$TARGET_SSH_PORT_DEFAULT}"
+    DIAG_INTERVAL="${DIAG_INTERVAL:-0}"
+    MAX_SESSIONS_PER_IP="${MAX_SESSIONS_PER_IP:-0}"
+    MAX_SESSIONS="${MAX_SESSIONS:-0}"
+    MAX_CONNECTIONS="${MAX_CONNECTIONS:-0}"
 }
 
 _hcr_save_conf() {
@@ -52,6 +60,10 @@ MAX_DOWNLOAD_FRAME=$MAX_DOWNLOAD_FRAME
 DOWNLOAD_POLL_TIMEOUT=$DOWNLOAD_POLL_TIMEOUT
 TARGET_SSH_IP=$TARGET_SSH_IP
 TARGET_SSH_PORT=$TARGET_SSH_PORT
+DIAG_INTERVAL=$DIAG_INTERVAL
+MAX_SESSIONS_PER_IP=$MAX_SESSIONS_PER_IP
+MAX_SESSIONS=$MAX_SESSIONS
+MAX_CONNECTIONS=$MAX_CONNECTIONS
 INSTALL_DIR=$INSTALL_DIR
 EOF
     chmod 644 "$CONF_FILE"
@@ -115,7 +127,16 @@ _hcr_ask_ssh_target() {
 
 _hcr_run_install() {
     local tgt="${TARGET_SSH_IP}:${TARGET_SSH_PORT}"
-    (cd "$INSTALL_DIR" && bash ./install.sh --port "$PORT" --transport "$TRANSPORT" --target "$tgt")
+    local -a args=(--port "$PORT" --transport "$TRANSPORT" --target "$tgt"
+        --max-download-frame "$MAX_DOWNLOAD_FRAME"
+        --download-poll-timeout "$DOWNLOAD_POLL_TIMEOUT")
+    # Opciones nuevas (solo se pasan si estan activas; el instalador
+    # vuelve a los valores por defecto cuando no se mencionan).
+    [[ "${DIAG_INTERVAL:-0}" != "0" ]] && args+=(--diagnostics-interval "$DIAG_INTERVAL")
+    [[ "${MAX_SESSIONS_PER_IP:-0}" != "0" ]] && args+=(--max-sessions-per-ip "$MAX_SESSIONS_PER_IP")
+    [[ "${MAX_SESSIONS:-0}" != "0" ]] && args+=(--max-sessions "$MAX_SESSIONS")
+    [[ "${MAX_CONNECTIONS:-0}" != "0" ]] && args+=(--max-connections "$MAX_CONNECTIONS")
+    (cd "$INSTALL_DIR" && bash ./install.sh "${args[@]}")
 }
 
 _hcr_ask_transport() {
@@ -144,18 +165,28 @@ _hcr_ask_perf() {
     local def_f def_p ans
     def_f="${1:-$FRAME_DEFAULT}"
     def_p="${2:-$POLL_DEFAULT}"
+    echo -e "\033[1;33mFrame de descarga: rango 1-262140 bytes. Por encima de 16384 todos los"
+    echo -e "clientes HC deben estar actualizados. Mas grande no siempre es mas rapido.\033[0m"
     echo -ne "\033[1;32mMAX_DOWNLOAD_FRAME [\033[1;37m$def_f\033[1;32m]: \033[1;37m"
     read -r ans
     ans="${ans//[[:space:]]/}"
     [[ -z "$ans" ]] && ans="$def_f"
-    if ! [[ "$ans" =~ ^[1-9][0-9]*$ ]]; then
+    if ! [[ "$ans" =~ ^[1-9][0-9]*$ ]] || [[ "${#ans}" -gt 6 ]] || [[ "$ans" -gt 262140 ]]; then
+        echo -e "\033[1;31mFrame invalido (1-262140); se usa $def_f.\033[0m"
         ans="$def_f"
+    fi
+    if [[ "$ans" -gt 16384 ]]; then
+        echo -e "\033[1;33mAviso: >16384 exige HC actualizado en todos los clientes de este puerto.\033[0m"
     fi
     _ASK_FRAME="$ans"
     echo -ne "\033[1;32mDOWNLOAD_POLL_TIMEOUT (ej. 8s) [\033[1;37m$def_p\033[1;32m]: \033[1;37m"
     read -r ans
     ans="${ans//[[:space:]]/}"
     [[ -z "$ans" ]] && ans="$def_p"
+    if ! [[ "$ans" =~ ^[0-9]+(ms|s|m)$ ]]; then
+        echo -e "\033[1;31mFormato invalido (ej. 8s, 500ms); se usa $def_p.\033[0m"
+        ans="$def_p"
+    fi
     _ASK_POLL="$ans"
 }
 
@@ -190,14 +221,22 @@ _hcr_download_bundle() {
     chown root:root "$INSTALL_DIR"
     chmod 755 "$INSTALL_DIR"
     echo -e "\033[1;32mDescargando hcr-server e install.sh…\033[0m"
-    if ! wget -qO "$INSTALL_DIR/hcr-server" "${URL_BASE}/hcr-server"; then
+    # Se descarga a temporales y solo se reemplaza si ambos llegaron completos.
+    local tb="$INSTALL_DIR/.hcr-server.new" ti="$INSTALL_DIR/.install.sh.new"
+    rm -f "$tb" "$ti"
+    if ! wget -qO "$tb" "${URL_BASE}/hcr-server" || [[ ! -s "$tb" ]]; then
         echo -e "\033[1;31mNo se pudo descargar el binario hcr-server.\033[0m"
+        rm -f "$tb" "$ti"
         return 1
     fi
-    if ! wget -qO "$INSTALL_DIR/install.sh" "${URL_BASE}/install.sh"; then
+    if ! wget -qO "$ti" "${URL_BASE}/install.sh" || [[ ! -s "$ti" ]]; then
         echo -e "\033[1;31mNo se pudo descargar install.sh.\033[0m"
+        rm -f "$tb" "$ti"
         return 1
     fi
+    [[ -f "$INSTALL_DIR/hcr-server" ]] && cp -f "$INSTALL_DIR/hcr-server" "$INSTALL_DIR/hcr-server.bak" 2>/dev/null
+    mv -f "$tb" "$INSTALL_DIR/hcr-server"
+    mv -f "$ti" "$INSTALL_DIR/install.sh"
     sed -i 's/\r$//' "$INSTALL_DIR/install.sh" 2>/dev/null || true
     chown root:root "$INSTALL_DIR/hcr-server" "$INSTALL_DIR/install.sh"
     chmod 755 "$INSTALL_DIR/hcr-server" "$INSTALL_DIR/install.sh"
@@ -208,13 +247,6 @@ _hcr_download_bundle() {
         chmod go-w "$d" 2>/dev/null || true
         d="$(dirname "$d")"
     done
-}
-
-_hcr_patch_install_perf() {
-    local f="$INSTALL_DIR/install.sh"
-    [[ -f "$f" ]] || return 1
-    sed -i "s/^MAX_DOWNLOAD_FRAME=.*/MAX_DOWNLOAD_FRAME=\"${MAX_DOWNLOAD_FRAME}\"/" "$f"
-    sed -i "s/^DOWNLOAD_POLL_TIMEOUT=.*/DOWNLOAD_POLL_TIMEOUT=\"${DOWNLOAD_POLL_TIMEOUT}\"/" "$f"
 }
 
 _hcr_do_install() {
@@ -262,7 +294,6 @@ _hcr_do_install() {
         }
     fi
 
-    _hcr_patch_install_perf
     echo ""
     echo -e "\033[1;32mEjecutando install.sh --port $PORT --transport $TRANSPORT --target ${TARGET_SSH_IP}:${TARGET_SSH_PORT}\033[0m"
     if ! _hcr_run_install; then
@@ -300,7 +331,6 @@ _hcr_do_reconfig() {
             return 1
         }
     fi
-    _hcr_patch_install_perf
     _hcr_run_install || true
     echo -e "\033[1;32mEstado: $(_hcr_status_text)\033[0m"
     _hcr_pause
@@ -321,7 +351,6 @@ _hcr_do_ssh_only() {
     TARGET_SSH_IP="$_ASK_SSH_IP"
     TARGET_SSH_PORT="$_ASK_SSH_PORT"
     _hcr_save_conf
-    _hcr_patch_install_perf
     _hcr_run_install || true
     echo -e "\033[1;32mSSH destino: ${TARGET_SSH_IP}:${TARGET_SSH_PORT}\033[0m"
     echo -e "\033[1;32mEstado: $(_hcr_status_text)\033[0m"
@@ -342,9 +371,92 @@ _hcr_do_perf() {
     MAX_DOWNLOAD_FRAME="$_ASK_FRAME"
     DOWNLOAD_POLL_TIMEOUT="$_ASK_POLL"
     _hcr_save_conf
-    _hcr_patch_install_perf
     _hcr_run_install || true
     echo -e "\033[1;32mAplicado. Estado: $(_hcr_status_text)\033[0m"
+    _hcr_pause
+}
+
+_hcr_version_text() {
+    local v=""
+    if [[ -x "$INSTALL_DIR/hcr-server" ]]; then
+        v="$("$INSTALL_DIR/hcr-server" -version 2>&1 | head -n 1)"
+    fi
+    printf '%s' "${v:-desconocida}"
+}
+
+_hcr_do_update() {
+    _hcr_load_conf
+    clear
+    echo -e "\033[1;32mActualizar HCR Server (binario + install.sh)\033[0m"
+    echo -e "\033[1;37mVersion actual: $(_hcr_version_text)\033[0m"
+    echo -e "\033[1;37mSe conserva tu configuracion: puerto, transporte, SSH, frame, poll y opciones avanzadas.\033[0m"
+    echo -e "\033[1;33mEl servicio se reinicia y las sesiones activas se cortan unos segundos.\033[0m"
+    echo -ne "\033[1;32m¿Continuar? [s/N]: \033[1;37m"
+    read -r ans
+    ans=$(echo "${ans:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ans" != "s" && "$ans" != "si" && "$ans" != "y" ]]; then
+        echo -e "\033[1;33mCancelado.\033[0m"
+        _hcr_pause
+        return 0
+    fi
+    _hcr_download_bundle || {
+        echo -e "\033[1;31mActualizacion cancelada; no se toco la version instalada.\033[0m"
+        _hcr_pause
+        return 1
+    }
+    if [[ "$TRANSPORT" == "tls" || "$TRANSPORT" == "auto" ]]; then
+        _hcr_ensure_tls || {
+            _hcr_pause
+            return 1
+        }
+    fi
+    if ! _hcr_run_install; then
+        echo -e "\033[1;31mFallo al aplicar la nueva version. Restaurando binario anterior...\033[0m"
+        if [[ -f "$INSTALL_DIR/hcr-server.bak" ]]; then
+            cp -f "$INSTALL_DIR/hcr-server.bak" "$INSTALL_DIR/.hcr-server.rb" &&
+                chmod 755 "$INSTALL_DIR/.hcr-server.rb" &&
+                mv -f "$INSTALL_DIR/.hcr-server.rb" "$INSTALL_DIR/hcr-server"
+            systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || true
+        fi
+        _hcr_pause
+        return 1
+    fi
+    echo -e "\033[1;32mActualizado. Version: $(_hcr_version_text)\033[0m"
+    echo -e "\033[1;32mEstado: $(_hcr_status_text)\033[0m"
+    _hcr_pause
+}
+
+_hcr_do_advanced() {
+    _hcr_load_conf
+    if [[ ! -f "$INSTALL_DIR/install.sh" ]]; then
+        echo -e "\033[1;31mHCR no está instalado. Use la opción 1.\033[0m"
+        _hcr_pause
+        return 1
+    fi
+    clear
+    echo -e "\033[1;32mOpciones avanzadas (0 = desactivado / valor por defecto del servidor)\033[0m"
+    echo ""
+    local ans
+    echo -ne "\033[1;32mDiagnostico de ruta (0, o 10s a 5m, ej. 10s) [\033[1;37m$DIAG_INTERVAL\033[1;32m]: \033[1;37m"
+    read -r ans; ans="${ans//[[:space:]]/}"
+    if [[ -n "$ans" ]]; then
+        if [[ "$ans" == "0" || "$ans" =~ ^[0-9]+(s|m)$ ]]; then DIAG_INTERVAL="$ans"
+        else echo -e "\033[1;31mValor invalido; se conserva $DIAG_INTERVAL.\033[0m"; fi
+    fi
+    local lbl var
+    for lbl in "Limite de sesiones por IP:MAX_SESSIONS_PER_IP" "Limite total de sesiones:MAX_SESSIONS" "Limite de conexiones/solicitudes:MAX_CONNECTIONS"; do
+        var="${lbl##*:}"
+        echo -ne "\033[1;32m${lbl%%:*} (0 = defecto) [\033[1;37m${!var}\033[1;32m]: \033[1;37m"
+        read -r ans; ans="${ans//[[:space:]]/}"
+        if [[ -n "$ans" ]]; then
+            if [[ "$ans" =~ ^[0-9]+$ ]]; then printf -v "$var" '%s' "$((10#$ans))"
+            else echo -e "\033[1;31mValor invalido; se conserva ${!var}.\033[0m"; fi
+        fi
+    done
+    _hcr_save_conf
+    _hcr_run_install || true
+    echo -e "\033[1;32mEstado: $(_hcr_status_text)\033[0m"
+    [[ "$DIAG_INTERVAL" != "0" ]] && echo -e "\033[1;37mLogs de diagnostico: journalctl -u ${SERVICE_NAME} -f\033[0m"
     _hcr_pause
 }
 
@@ -371,6 +483,7 @@ _hcr_do_status() {
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo ""
     echo -e "\033[1;33mEstado:\033[1;37m $(_hcr_status_text)\033[0m"
+    echo -e "\033[1;33mVersion:\033[1;37m $(_hcr_version_text)\033[0m"
     echo -e "\033[1;33mConfig:\033[1;37m $CONF_FILE\033[0m"
     [[ -f "$CONF_FILE" ]] && cat "$CONF_FILE"
     echo ""
@@ -439,6 +552,8 @@ while true; do
     echo -e "\033[1;31m[\033[1;36m6\033[1;31m]\033[1;33m Detener servicio\033[0m"
     echo -e "\033[1;31m[\033[1;36m7\033[1;31m]\033[1;33m Ver estado y logs\033[0m"
     echo -e "\033[1;31m[\033[1;36m8\033[1;31m]\033[1;33m Desinstalar servicio\033[0m"
+    echo -e "\033[1;31m[\033[1;36m9\033[1;31m]\033[1;33m Actualizar HCR (binario + install.sh)\033[0m"
+    echo -e "\033[1;31m[\033[1;36m10\033[1;31m]\033[1;33m Opciones avanzadas (diagnóstico / límites)\033[0m"
     echo -e "\033[1;31m[\033[1;36m0\033[1;31m]\033[1;33m Volver al menú\033[0m"
     echo ""
     echo -ne "\033[1;32mOpción: \033[1;37m"
@@ -452,6 +567,8 @@ while true; do
         6) clear; _hcr_do_stop ;;
         7) _hcr_do_status ;;
         8) _hcr_do_uninstall ;;
+        9) _hcr_do_update ;;
+        10) _hcr_do_advanced ;;
         0 | 00) exit 0 ;;
         *)
             echo -e "\033[1;31mOpción no válida.\033[0m"

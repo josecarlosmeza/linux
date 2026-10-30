@@ -2,3 +2,14 @@
 - ./install —port 8880 —transport plain
 - you can adjust ur self to get best performance MAX_DOWNLOAD_FRAME or DOWNLOAD_POLL_TIMEOUT
 - suport v7.10.12 (808) and above
+
+=== ACTUALIZACION 30/10/2026 (New HCR Server / New Feature HCR) ===
+- Paquete: hcr-server-linux-amd64.tar.gz  (hcr-server + install.sh + README.md)
+- Nuevo HCR Server + nueva funcion en el cliente HC:
+  ajustes Upload / Download / Batch / Chunk / Frame y "Automatic calibration"
+  (punto de partida; ajustar de a poco segun la red).
+- Servidor: --max-download-frame (1-262140, def. 16384) y --download-poll-timeout (def. 8s)
+- Frames mayores a 16384 exigen HC actualizado en todos los clientes del puerto.
+- Nuevos: --diagnostics-interval, --max-sessions-per-ip, --max-sessions, --max-connections,
+  --session-stats-interval, --tls-cert / --tls-key, --version
+- Arquitecturas del paquete oficial: 386, amd64, arm, arm64 (aqui solo amd64).
