@@ -1,0 +1,832 @@
+#!/bin/bash
+#====================================================
+# Backup externo diario y cifrado
+# Menú 15 (BACKUP) → opción 3
+# Destinos: VPS por SSH · nube (rclone) · Telegram
+# CLI: --run (cron) | --status | (sin argumentos: menú)
+#====================================================
+set +e
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin${PATH:+:$PATH}"
+[[ $EUID -eq 0 ]] || { echo -e "\033[1;31mEjecute como root.\033[0m"; exit 1; }
+
+CDIR="/etc/RedLibre"
+CFG="$CDIR/backup-externo.conf"
+PASSF="$CDIR/.backup-externo.pass"
+SSHKEY="$CDIR/.backup-externo.key"
+LASTF="$CDIR/backup-externo.last"
+LOCAL_DIR="/var/backups/redlibre"
+LOG="/var/log/redlibre-backup-externo.log"
+CRONF="/etc/cron.d/redlibre-backup-externo"
+SELF="/bin/backup-externo"
+TG_API="https://api.telegram.org"
+
+HOSTTAG="$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9\n' '_')"
+[[ -z "$HOSTTAG" ]] && HOSTTAG="srv"
+
+# --- valores por defecto -----------------------------------------------------
+HORA=3
+RET_DAILY=14
+RET_WEEKLY=4
+LOCAL_KEEP=3
+CRON_ON=0
+SSH_ON=0; SSH_HOST=""; SSH_PORT=22; SSH_USER="root"; SSH_DIR="redlibre-backups"
+RC_ON=0;  RC_REMOTE=""
+TG_ON=0;  TG_TOKEN=""; TG_CHAT=""
+
+_line() { echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"; }
+_pause() { echo -ne "\033[1;33m[ENTER]\033[0m "; read -r; }
+_log() { echo "$(date '+%F %T') $*"; }
+_ok() { echo -e "\033[1;32m$*\033[0m"; }
+_warn() { echo -e "\033[1;33m$*\033[0m"; }
+_err() { echo -e "\033[1;31m$*\033[0m"; }
+
+_ask() { # _ask VAR "texto" "defecto"
+	local _a
+	echo -ne "\033[1;32m$2 [\033[1;37m$3\033[1;32m]: \033[1;37m"
+	read -r _a
+	echo -ne "\033[0m"
+	_a="${_a#"${_a%%[![:space:]]*}"}"
+	_a="${_a%"${_a##*[![:space:]]}"}"
+	[[ -z "$_a" ]] && _a="$3"
+	printf -v "$1" '%s' "$_a"
+}
+
+_yes() { # _yes "pregunta" [defecto s|n]
+	local a d="${2:-n}" p="[s/N]"
+	[[ "$d" = "s" ]] && p="[S/n]"
+	echo -ne "\033[1;32m$1 $p: \033[1;37m"
+	read -r a
+	echo -ne "\033[0m"
+	a="$(echo "${a:-$d}" | tr '[:upper:]' '[:lower:]')"
+	[[ "$a" = "s" || "$a" = "si" || "$a" = "sí" || "$a" = "y" ]]
+}
+
+# --- configuración -----------------------------------------------------------
+_load() {
+	[[ -f "$CFG" ]] && . "$CFG"
+}
+
+_save() {
+	mkdir -p "$CDIR"
+	( umask 077
+	{
+		echo "# RedLibre backup-externo — generado automáticamente"
+		for v in HORA RET_DAILY RET_WEEKLY LOCAL_KEEP CRON_ON SSH_ON SSH_HOST SSH_PORT SSH_USER SSH_DIR RC_ON RC_REMOTE TG_ON TG_TOKEN TG_CHAT; do
+			printf '%s=%q\n' "$v" "${!v}"
+		done
+	} >"$CFG" )
+	chmod 600 "$CFG"
+}
+
+_need_pkg() { # _need_pkg comando paquete
+	command -v "$1" >/dev/null 2>&1 && return 0
+	_warn "Instalando $2..."
+	if command -v dnf >/dev/null 2>&1; then dnf install -y "$2" >/dev/null 2>&1
+	elif command -v yum >/dev/null 2>&1; then yum install -y "$2" >/dev/null 2>&1
+	elif command -v apt-get >/dev/null 2>&1; then apt-get install -y "$2" >/dev/null 2>&1
+	fi
+	command -v "$1" >/dev/null 2>&1
+}
+
+# --- cifrado -----------------------------------------------------------------
+_ossl_new() { # entrada salida  (clave en $PASSF)
+	if openssl enc -aes-256-cbc -pbkdf2 -pass pass:x </dev/null >/dev/null 2>&1; then
+		openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass file:"$PASSF" -in "$1" -out "$2" 2>/dev/null
+	else
+		openssl enc -aes-256-cbc -salt -md sha256 -pass file:"$PASSF" -in "$1" -out "$2" 2>/dev/null
+	fi
+}
+
+_ossl_dec() { # entrada salida passfile  → prueba pbkdf2 y luego modo antiguo
+	local in="$1" out="$2" pf="$3"
+	if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass file:"$pf" -in "$in" -out "$out" 2>/dev/null \
+		&& tar -tf "$out" >/dev/null 2>&1; then
+		return 0
+	fi
+	if openssl enc -d -aes-256-cbc -md sha256 -pass file:"$pf" -in "$in" -out "$out" 2>/dev/null \
+		&& tar -tf "$out" >/dev/null 2>&1; then
+		return 0
+	fi
+	rm -f "$out"
+	return 1
+}
+
+# --- construcción del respaldo -----------------------------------------------
+_build() { # $1 = archivo .enc final
+	local out="$1" st plain p
+	local -a rel=()
+	umask 077
+	mkdir -p "$LOCAL_DIR"; chmod 700 "$LOCAL_DIR"
+	st="$(mktemp -d /var/tmp/rlbk.XXXXXX)" || return 1
+	rm -f /root/backup.vps
+	if [[ -x /bin/userbackup ]]; then
+		TERM=dumb /bin/userbackup botfile </dev/null >/dev/null 2>&1
+	fi
+	if [[ ! -s /root/backup.vps ]]; then
+		_log "ERROR: userbackup no generó /root/backup.vps"
+		rm -rf "$st"
+		return 1
+	fi
+	mv -f /root/backup.vps "$st/backup.vps"
+
+	for p in /etc/RedLibre/nodos /etc/RedLibre/*.conf /etc/RedLibre/*.env \
+		/opt/hcr-server/fullchain.pem /opt/hcr-server/privkey.pem \
+		/usr/local/etc/xray /etc/xray /etc/wireguard /etc/autostart \
+		/etc/ssh/sshd_config /etc/default/dropbear /etc/squid/squid.conf /etc/squid3/squid.conf; do
+		[[ -e "$p" ]] && rel+=("${p#/}")
+	done
+	if ((${#rel[@]})); then
+		tar -C / -czf "$st/extras.tar.gz" "${rel[@]}" 2>/dev/null
+	else
+		tar -czf "$st/extras.tar.gz" -T /dev/null 2>/dev/null
+	fi
+	crontab -l >"$st/crontab.txt" 2>/dev/null || : >"$st/crontab.txt"
+	{
+		echo "RedLibre backup-externo"
+		echo "fecha: $(date '+%F %T %z')"
+		echo "host: $(hostname)"
+		echo "ip: $(hostname -I 2>/dev/null | awk '{print $1}')"
+		echo "so: $(. /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")"
+		echo "usuarios_db: $(wc -l </root/usuarios.db 2>/dev/null || echo 0)"
+		echo "--- extras ---"
+		tar -tzf "$st/extras.tar.gz" 2>/dev/null | head -n 200
+	} >"$st/MANIFEST.txt"
+
+	plain="$st/pack.tar"
+	tar -C "$st" -cf "$plain" backup.vps extras.tar.gz crontab.txt MANIFEST.txt 2>/dev/null || {
+		_log "ERROR: no se pudo empaquetar"
+		rm -rf "$st"; return 1
+	}
+	if ! _ossl_new "$plain" "$out.part"; then
+		_log "ERROR: falló el cifrado (¿openssl o contraseña?)"
+		rm -rf "$st"; rm -f "$out.part"
+		return 1
+	fi
+	mv -f "$out.part" "$out"
+	rm -rf "$st"
+	return 0
+}
+
+# --- retención ---------------------------------------------------------------
+# stdin: nombres de archivo; stdout: los que hay que borrar
+_retention_list() {
+	local f d wk i=0 wc=0
+	local -A seen=()
+	local keep_d="$RET_DAILY" keep_w="$RET_WEEKLY"
+	[[ "$keep_d" =~ ^[0-9]+$ && "$keep_d" -ge 1 ]] || keep_d=14
+	[[ "$keep_w" =~ ^[0-9]+$ ]] || keep_w=4
+	while IFS= read -r f; do
+		[[ -z "$f" ]] && continue
+		i=$((i + 1))
+		((i <= keep_d)) && continue
+		d="$(sed -E 's/.*-([0-9]{8})-[0-9]{4}\.tar\.enc$/\1/' <<<"$f")"
+		wk="$(date -d "${d:0:4}-${d:4:2}-${d:6:2}" +%G-%V 2>/dev/null)"
+		if [[ -n "$wk" && -z "${seen[$wk]:-}" ]] && ((wc < keep_w)); then
+			seen[$wk]=1
+			wc=$((wc + 1))
+			continue
+		fi
+		echo "$f"
+	done < <(sort -r)
+}
+
+_mine() { grep -E "^rl-${HOSTTAG}-[0-9]{8}-[0-9]{4}\.tar\.enc$"; }
+
+# --- destino SSH -------------------------------------------------------------
+_ssh_cmd() {
+	ssh -i "$SSHKEY" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+		-o ConnectTimeout=20 -o ServerAliveInterval=15 "$SSH_USER@$SSH_HOST" "$@"
+}
+_ssh_q() { _ssh_cmd "$@" </dev/null; }
+
+_ssh_upload() {
+	local f="$1" b sz rsz
+	b="$(basename "$f")"
+	_ssh_q "mkdir -p $SSH_DIR" || return 1
+	_ssh_cmd "cat > $SSH_DIR/.$b.part && mv -f $SSH_DIR/.$b.part $SSH_DIR/$b" <"$f" || return 1
+	sz="$(stat -c %s "$f")"
+	rsz="$(_ssh_q "stat -c %s $SSH_DIR/$b" 2>/dev/null | tr -dc '0-9')"
+	[[ "$sz" = "$rsz" ]]
+}
+_ssh_list() { _ssh_q "ls -1 $SSH_DIR 2>/dev/null"; }
+_ssh_del() { _ssh_q "rm -f $SSH_DIR/$1"; }
+_ssh_get() { _ssh_q "cat $SSH_DIR/$1" >"$2"; }
+
+# --- destino rclone ----------------------------------------------------------
+_rc_env() {
+	[[ -z "${RCLONE_CONFIG:-}" && -f /root/.config/rclone/rclone.conf ]] && export RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+}
+_rc_upload() {
+	local f="$1" b sz rsz
+	_rc_env
+	b="$(basename "$f")"
+	rclone copyto "$f" "$RC_REMOTE/$b" --retries 3 --low-level-retries 5 >>"$LOG" 2>&1 || return 1
+	sz="$(stat -c %s "$f")"
+	rsz="$(rclone lsf --format s "$RC_REMOTE/$b" 2>/dev/null | tr -dc '0-9')"
+	[[ "$sz" = "$rsz" ]]
+}
+_rc_list() { _rc_env; rclone lsf "$RC_REMOTE" --files-only 2>/dev/null; }
+_rc_del() { _rc_env; rclone deletefile "$RC_REMOTE/$1" >>"$LOG" 2>&1; }
+_rc_get() { _rc_env; rclone copyto "$RC_REMOTE/$1" "$2" >>"$LOG" 2>&1; }
+
+# --- destino Telegram --------------------------------------------------------
+_tg_msg() {
+	[[ -n "$TG_TOKEN" && -n "$TG_CHAT" ]] || return 1
+	curl -s -m 30 -o /dev/null "$TG_API/bot$TG_TOKEN/sendMessage" \
+		--data-urlencode "chat_id=$TG_CHAT" --data-urlencode "text=$1"
+}
+_tg_file() {
+	local f="$1" sz
+	sz="$(stat -c %s "$f")"
+	if ((sz > 49000000)); then
+		_tg_msg "⚠️ Respaldo de $HOSTTAG demasiado grande para Telegram ($((sz / 1048576)) MB)."
+		return 1
+	fi
+	curl -s -m 180 "$TG_API/bot$TG_TOKEN/sendDocument" -F "chat_id=$TG_CHAT" \
+		-F "document=@$f" -F "caption=♻️ Respaldo RedLibre $HOSTTAG $(date '+%F %H:%M') ($((sz / 1024)) KB, cifrado)" \
+		| grep -q '"ok":true'
+}
+_tg_detect() {
+	local l
+	l="$(grep -ho 'bot [0-9]\{6,\}:[A-Za-z0-9_-]\{30,\} [0-9]\+' /etc/autostart 2>/dev/null | tail -n1)"
+	[[ -z "$l" ]] && l="$(ps -eo args 2>/dev/null | grep -o 'bot [0-9]\{6,\}:[A-Za-z0-9_-]\{30,\} [0-9]\+' | head -n1)"
+	[[ -z "$l" ]] && return 1
+	_DET_TOKEN="$(awk '{print $2}' <<<"$l")"
+	_DET_CHAT="$(awk '{print $3}' <<<"$l")"
+	return 0
+}
+
+# --- ejecución del respaldo --------------------------------------------------
+_run() {
+	_load
+	local lockf=/var/lock/redlibre-backup-externo.lock
+	exec 9>"$lockf"
+	if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
+		_log "Ya hay un respaldo en curso."
+		return 1
+	fi
+	if [[ -f "$LOG" && "$(stat -c %s "$LOG" 2>/dev/null)" -gt 1048576 ]]; then
+		tail -n 500 "$LOG" >"$LOG.tmp" 2>/dev/null && mv -f "$LOG.tmp" "$LOG"
+	fi
+	if [[ ! -s "$PASSF" ]]; then
+		_log "ERROR: no hay contraseña de cifrado configurada."
+		_tg_msg "❌ Respaldo externo $HOSTTAG: falta la contraseña de cifrado."
+		return 1
+	fi
+	_need_pkg openssl openssl >/dev/null 2>&1
+	local name="rl-${HOSTTAG}-$(date +%Y%m%d-%H%M).tar.enc"
+	local out="$LOCAL_DIR/$name" errs=0 dests="" sz
+	_log "Inicio del respaldo → $name"
+	if ! _build "$out"; then
+		_log "FALLÓ la creación del respaldo."
+		_tg_msg "❌ Respaldo externo $HOSTTAG: no se pudo crear el archivo."
+		echo "$(date +%s)|FAIL|0||$name" >"$LASTF"
+		return 1
+	fi
+	sz="$(stat -c %s "$out")"
+	_log "Respaldo creado: $((sz / 1024)) KB (cifrado)"
+
+	if [[ "$SSH_ON" = 1 ]]; then
+		if _ssh_upload "$out"; then
+			_log "SSH ($SSH_USER@$SSH_HOST): subido y verificado"
+			dests+="ssh "
+			_ssh_list | _mine | _retention_list | while read -r f; do
+				_ssh_del "$f" && _log "SSH: borrado antiguo $f"
+			done
+		else
+			_log "SSH: ERROR al subir"; errs=$((errs + 1))
+		fi
+	fi
+	if [[ "$RC_ON" = 1 ]]; then
+		if _rc_upload "$out"; then
+			_log "rclone ($RC_REMOTE): subido y verificado"
+			dests+="nube "
+			_rc_list | _mine | _retention_list | while read -r f; do
+				_rc_del "$f" && _log "rclone: borrado antiguo $f"
+			done
+		else
+			_log "rclone: ERROR al subir"; errs=$((errs + 1))
+		fi
+	fi
+	if [[ "$TG_ON" = 1 ]]; then
+		if _tg_file "$out"; then
+			_log "Telegram: enviado"; dests+="telegram "
+		else
+			_log "Telegram: ERROR al enviar"; errs=$((errs + 1))
+		fi
+	fi
+	if [[ -z "$dests" && $errs -eq 0 ]]; then
+		_log "AVISO: no hay destinos externos activos; solo copia local."
+	fi
+
+	# copias locales: se conservan las últimas LOCAL_KEEP
+	ls -1 "$LOCAL_DIR"/rl-"${HOSTTAG}"-*.tar.enc 2>/dev/null | sort -r | tail -n +$((LOCAL_KEEP + 1)) | xargs -r rm -f
+
+	if ((errs > 0)); then
+		echo "$(date +%s)|PARCIAL|$sz|$dests|$name" >"$LASTF"
+		_tg_msg "⚠️ Respaldo externo $HOSTTAG: $errs destino(s) fallaron. Revise /var/log/redlibre-backup-externo.log"
+		return 1
+	fi
+	echo "$(date +%s)|OK|$sz|$dests|$name" >"$LASTF"
+	_log "Respaldo completado."
+	return 0
+}
+
+# --- cron --------------------------------------------------------------------
+_cron_apply() {
+	_load
+	if [[ "$CRON_ON" = 1 ]]; then
+		cat >"$CRONF" <<EOF
+# RedLibre — respaldo externo diario
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+15 $HORA * * * root $SELF --run >>$LOG 2>&1
+EOF
+		chmod 644 "$CRONF"
+		if command -v systemctl >/dev/null 2>&1; then
+			systemctl enable --now crond >/dev/null 2>&1 || systemctl enable --now cron >/dev/null 2>&1
+		fi
+	else
+		rm -f "$CRONF"
+	fi
+}
+
+# --- estado ------------------------------------------------------------------
+_show_status() {
+	_load
+	local ep st sz ds nm hrs col
+	echo -e "\033[1;33mCifrado:\033[0m   $([[ -s $PASSF ]] && echo -e '\033[1;32mcontraseña configurada' || echo -e '\033[1;31mSIN contraseña')\033[0m"
+	echo -e "\033[1;33mDiario:\033[0m    $([[ "$CRON_ON" = 1 && -f $CRONF ]] && echo -e "\033[1;32mACTIVO · $(printf '%02d' "$HORA"):15 (hora del servidor)" || echo -e '\033[1;31mdesactivado')\033[0m"
+	echo -e "\033[1;33mDestinos:\033[0m"
+	echo -e "   VPS SSH   : $([[ "$SSH_ON" = 1 ]] && echo -e "\033[1;32m$SSH_USER@$SSH_HOST:$SSH_PORT/$SSH_DIR" || echo -e '\033[1;31mno')\033[0m"
+	echo -e "   Nube      : $([[ "$RC_ON" = 1 ]] && echo -e "\033[1;32m$RC_REMOTE" || echo -e '\033[1;31mno')\033[0m"
+	echo -e "   Telegram  : $([[ "$TG_ON" = 1 ]] && echo -e "\033[1;32mchat $TG_CHAT" || echo -e '\033[1;31mno')\033[0m"
+	echo -e "\033[1;33mRetención:\033[0m  $RET_DAILY diarios + $RET_WEEKLY semanales (locales: $LOCAL_KEEP)"
+	if [[ -f "$LASTF" ]]; then
+		IFS='|' read -r ep st sz ds nm <"$LASTF"
+		hrs=$((($(date +%s) - ep) / 3600))
+		col="\033[1;32m"
+		[[ "$st" != "OK" || $hrs -gt 26 ]] && col="\033[1;31m"
+		echo -e "\033[1;33mÚltimo:\033[0m     ${col}$st · hace ${hrs} h · $((sz / 1024)) KB · ${ds:-solo local}\033[0m"
+		echo -e "             $nm"
+		[[ $hrs -gt 26 && "$CRON_ON" = 1 ]] && _err "   ¡Hace más de 26 h sin respaldo! Revise la opción 10 (registro)."
+	else
+		echo -e "\033[1;33mÚltimo:\033[0m     \033[1;31msin respaldos todavía\033[0m"
+	fi
+}
+
+# --- configuración de contraseña ---------------------------------------------
+_cfg_pass() {
+	local p1 p2
+	clear; _line
+	echo -e "\E[44;1;37m        Contraseña de cifrado del respaldo        \E[0m"; _line
+	_warn "Los respaldos contienen hashes de contraseñas y claves privadas (WireGuard, TLS)."
+	_warn "Por eso se cifran con AES-256 antes de salir del servidor."
+	_err  "Guarde esta contraseña en OTRO lugar (gestor de contraseñas). Sin ella NO se puede restaurar."
+	[[ -s "$PASSF" ]] && _warn "Ya existe una. Si la cambia, los respaldos viejos seguirán necesitando la anterior."
+	echo ""
+	echo -ne "\033[1;32mNueva contraseña (mín. 10 caracteres, vacío = cancelar): \033[1;37m"
+	read -rs p1; echo
+	[[ -z "$p1" ]] && { _warn "Cancelado."; _pause; return; }
+	if ((${#p1} < 10)); then _err "Muy corta (mínimo 10)."; _pause; return; fi
+	echo -ne "\033[1;32mRepita la contraseña: \033[1;37m"
+	read -rs p2; echo
+	if [[ "$p1" != "$p2" ]]; then _err "No coinciden."; _pause; return; fi
+	( umask 077; printf '%s\n' "$p1" >"$PASSF" )
+	chmod 600 "$PASSF"
+	_ok "Contraseña guardada (archivo $PASSF, solo root)."
+	_pause
+}
+
+# --- destino SSH: configuración ----------------------------------------------
+_cfg_ssh() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Destino: otro VPS por SSH        \E[0m"; _line
+	_warn "Use un servidor DISTINTO (idealmente otro proveedor). Se crea una clave SSH exclusiva."
+	echo ""
+	_ask SSH_HOST "IP o dominio del VPS de respaldo" "${SSH_HOST:-}"
+	_ask SSH_PORT "Puerto SSH" "${SSH_PORT:-22}"
+	_ask SSH_USER "Usuario remoto" "${SSH_USER:-root}"
+	_ask SSH_DIR "Carpeta remota (relativa al home)" "${SSH_DIR:-redlibre-backups}"
+	if [[ ! "$SSH_HOST" =~ ^[A-Za-z0-9._:-]+$ || ! "$SSH_PORT" =~ ^[0-9]+$ || ! "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ \
+		|| ! "$SSH_DIR" =~ ^[A-Za-z0-9._/-]+$ || "$SSH_DIR" == *..* ]]; then
+		_err "Algún dato tiene caracteres no permitidos."; _pause; return
+	fi
+	_need_pkg ssh openssh-clients >/dev/null 2>&1 || _need_pkg ssh openssh-client >/dev/null 2>&1
+	if [[ ! -f "$SSHKEY" ]]; then
+		ssh-keygen -q -t ed25519 -N "" -f "$SSHKEY" -C "redlibre-backup-$HOSTTAG" >/dev/null 2>&1
+		chmod 600 "$SSHKEY"
+		_ok "Clave SSH creada."
+	fi
+	echo ""
+	echo -e "\033[1;33mClave pública de este servidor:\033[0m"
+	cat "$SSHKEY.pub"
+	echo ""
+	if _yes "¿Instalar la clave en el VPS remoto ahora (pedirá la contraseña del remoto una vez)?" s; then
+		cat "$SSHKEY.pub" | ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+			'umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
+	else
+		_warn "Agregue esa línea a ~/.ssh/authorized_keys del usuario remoto y vuelva a probar."
+	fi
+	echo ""
+	if _ssh_q "mkdir -p $SSH_DIR && echo ok" 2>/dev/null | grep -q ok; then
+		_ok "Conexión SSH sin contraseña: OK. Destino activado."
+		SSH_ON=1
+	else
+		_err "No se pudo conectar sin contraseña. Destino NO activado."
+		SSH_ON=0
+	fi
+	_save
+	_pause
+}
+
+# --- destino rclone: configuración -------------------------------------------
+_cfg_rclone() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Destino: nube con rclone        \E[0m"; _line
+	_warn "Sirve para Cloudflare R2, Backblaze B2, Wasabi, Google Drive, etc."
+	echo ""
+	if ! command -v rclone >/dev/null 2>&1; then
+		_warn "rclone no está instalado."
+		if _yes "¿Instalarlo ahora?" s; then
+			if command -v dnf >/dev/null 2>&1 && dnf install -y rclone >/dev/null 2>&1; then :
+			elif command -v apt-get >/dev/null 2>&1 && apt-get install -y rclone >/dev/null 2>&1; then :
+			else
+				_warn "Se usará el instalador oficial (https://rclone.org/install.sh)."
+				_need_pkg curl curl >/dev/null 2>&1
+				curl -fsSL https://rclone.org/install.sh | bash >/dev/null 2>&1
+			fi
+		fi
+		command -v rclone >/dev/null 2>&1 || { _err "No se pudo instalar rclone."; _pause; return; }
+	fi
+	_rc_env
+	echo -e "\033[1;33mRemotos ya configurados:\033[0m"
+	rclone listremotes 2>/dev/null || true
+	echo ""
+	if _yes "¿Crear/editar un remoto ahora con 'rclone config'?" n; then
+		rclone config
+	fi
+	echo ""
+	_warn "Formato: nombre_del_remoto:bucket/carpeta   (ej.: r2:mis-respaldos/redlibre)"
+	_ask RC_REMOTE "Remoto y carpeta" "${RC_REMOTE:-}"
+	if [[ ! "$RC_REMOTE" =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+$ ]]; then
+		_err "Formato inválido."; RC_ON=0; _save; _pause; return
+	fi
+	echo -e "\033[1;33mProbando...\033[0m"
+	if rclone mkdir "$RC_REMOTE" >/dev/null 2>&1 && rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1; then
+		_ok "Acceso a la nube: OK. Destino activado."
+		RC_ON=1
+	else
+		_err "No se pudo acceder a $RC_REMOTE. Revise 'rclone config'. Destino NO activado."
+		RC_ON=0
+	fi
+	_save
+	_pause
+}
+
+# --- destino Telegram: configuración -----------------------------------------
+_cfg_tg() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Destino: Telegram (archivo cifrado)        \E[0m"; _line
+	_warn "Límite de Telegram: 50 MB por archivo. También se usa para avisarle si un respaldo falla."
+	echo ""
+	if _tg_detect; then
+		_ok "Bot detectado en este servidor (menú 25): chat $_DET_CHAT"
+		if _yes "¿Usar ese bot y ese chat?" s; then
+			TG_TOKEN="$_DET_TOKEN"; TG_CHAT="$_DET_CHAT"
+		fi
+	fi
+	if [[ -z "$TG_TOKEN" ]]; then
+		_ask TG_TOKEN "Token del bot" ""
+		_ask TG_CHAT "ID del chat" ""
+	fi
+	if [[ ! "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ || ! "$TG_CHAT" =~ ^-?[0-9]+$ ]]; then
+		_err "Token o chat inválido."; TG_ON=0; _save; _pause; return
+	fi
+	_need_pkg curl curl >/dev/null 2>&1
+	if curl -s -m 30 "$TG_API/bot$TG_TOKEN/sendMessage" --data-urlencode "chat_id=$TG_CHAT" \
+		--data-urlencode "text=✅ Prueba de respaldo externo RedLibre ($HOSTTAG)" | grep -q '"ok":true'; then
+		_ok "Mensaje de prueba enviado. Destino activado."
+		TG_ON=1
+	else
+		_err "No se pudo enviar. Revise token/chat (envíe /start al bot primero)."
+		TG_ON=0
+	fi
+	_save
+	_pause
+}
+
+# --- programación ------------------------------------------------------------
+_cfg_sched() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Programación y retención        \E[0m"; _line
+	if [[ ! -s "$PASSF" ]]; then _err "Primero configure la contraseña (opción 2)."; _pause; return; fi
+	if [[ "$CRON_ON" = 1 ]]; then
+		_ok "El respaldo diario está ACTIVO."
+		if _yes "¿Desactivarlo?" n; then CRON_ON=0; _save; _cron_apply; _warn "Desactivado."; _pause; return; fi
+	else
+		_warn "El respaldo diario está desactivado."
+	fi
+	_ask HORA "Hora del día (0-23, hora del servidor)" "$HORA"
+	[[ "$HORA" =~ ^[0-9]+$ && "$HORA" -le 23 ]] || { _err "Hora inválida."; _pause; return; }
+	HORA=$((10#$HORA))
+	_ask RET_DAILY "Cuántos respaldos DIARIOS conservar" "$RET_DAILY"
+	_ask RET_WEEKLY "Cuántos SEMANALES conservar (uno por semana)" "$RET_WEEKLY"
+	_ask LOCAL_KEEP "Copias locales en este servidor" "$LOCAL_KEEP"
+	[[ "$RET_DAILY" =~ ^[0-9]+$ && "$RET_DAILY" -ge 1 && "$RET_WEEKLY" =~ ^[0-9]+$ && "$LOCAL_KEEP" =~ ^[0-9]+$ && "$LOCAL_KEEP" -ge 1 ]] \
+		|| { _err "Valores inválidos."; _pause; return; }
+	if [[ "$SSH_ON" != 1 && "$RC_ON" != 1 && "$TG_ON" != 1 ]]; then
+		_warn "No hay destinos externos activos: solo se guardaría copia local (no protege si el servidor cae)."
+		_yes "¿Activar igualmente?" n || { _pause; return; }
+	fi
+	CRON_ON=1
+	_save
+	_cron_apply
+	_ok "Respaldo diario activado a las ${HORA}:15 (hora del servidor)."
+	_pause
+}
+
+# --- probar destinos / ejecutar ----------------------------------------------
+_test_dests() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Probar destinos        \E[0m"; _line
+	local any=0
+	if [[ "$SSH_ON" = 1 ]]; then
+		any=1
+		_ssh_q "mkdir -p $SSH_DIR && echo ok" 2>/dev/null | grep -q ok && _ok "SSH: OK" || _err "SSH: FALLA"
+	fi
+	if [[ "$RC_ON" = 1 ]]; then
+		any=1
+		_rc_env
+		rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1 && _ok "Nube: OK" || _err "Nube: FALLA"
+	fi
+	if [[ "$TG_ON" = 1 ]]; then
+		any=1
+		_tg_msg "✅ Prueba RedLibre $HOSTTAG" && _ok "Telegram: mensaje enviado" || _err "Telegram: FALLA"
+	fi
+	[[ $any = 0 ]] && _warn "No hay destinos configurados."
+	_pause
+}
+
+_run_now() {
+	clear; _line
+	echo -e "\E[44;1;37m        Respaldar ahora        \E[0m"; _line
+	_run 2>&1 | tee -a "$LOG"
+	echo ""
+	_show_status
+	_pause
+}
+
+# --- restauración ------------------------------------------------------------
+_pick() { # _pick "titulo" lista(archivo con nombres)  → _PICKED
+	local -a arr=()
+	mapfile -t arr <"$2"
+	((${#arr[@]})) || { _err "No hay respaldos para elegir."; return 1; }
+	local i
+	echo -e "\033[1;33m$1\033[0m"
+	for i in "${!arr[@]}"; do
+		printf '  \033[1;31m[\033[1;36m%2d\033[1;31m]\033[1;37m %s\n' "$((i + 1))" "${arr[$i]}"
+	done
+	echo -ne "\033[1;32mNúmero (0 = cancelar): \033[1;37m"
+	read -r i
+	[[ "$i" =~ ^[0-9]+$ && "$i" -ge 1 && "$i" -le ${#arr[@]} ]] || return 1
+	_PICKED="${arr[$((i - 1))]}"
+}
+
+_restore() {
+	_load
+	clear; _line
+	echo -e "\E[44;1;37m        Restaurar desde un respaldo        \E[0m"; _line
+	echo -e "\033[1;31m[\033[1;36m1\033[1;31m] \033[1;37m• \033[1;33mCopia local (este servidor)"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m] \033[1;37m• \033[1;33mDesde el VPS por SSH"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m] \033[1;37m• \033[1;33mDesde la nube (rclone)"
+	echo -e "\033[1;31m[\033[1;36m4\033[1;31m] \033[1;37m• \033[1;33mArchivo .tar.enc que ya copié a este servidor"
+	echo -e "\033[1;31m[\033[1;36m0\033[1;31m] \033[1;37m• \033[1;33mVolver"
+	echo -ne "\033[1;32mOrigen: \033[1;37m"
+	local o f="" tmp lst pw pf work
+	read -r o
+	umask 077
+	mkdir -p "$LOCAL_DIR/restore"; chmod 700 "$LOCAL_DIR" "$LOCAL_DIR/restore"
+	lst="$(mktemp)"
+	case "$o" in
+	1)
+		ls -1 "$LOCAL_DIR"/rl-*.tar.enc 2>/dev/null | xargs -r -n1 basename | sort -r >"$lst"
+		_pick "Copias locales:" "$lst" || { rm -f "$lst"; _pause; return; }
+		f="$LOCAL_DIR/$_PICKED"
+		;;
+	2)
+		[[ "$SSH_ON" = 1 || -n "$SSH_HOST" ]] || { _err "Configure primero el destino SSH."; rm -f "$lst"; _pause; return; }
+		_ssh_list | grep -E '^rl-.*\.tar\.enc$' | sort -r | head -n 40 >"$lst"
+		_pick "Respaldos en el VPS (más nuevos primero):" "$lst" || { rm -f "$lst"; _pause; return; }
+		f="$LOCAL_DIR/restore/$_PICKED"
+		_ssh_get "$_PICKED" "$f" || { _err "Falló la descarga."; rm -f "$lst" "$f"; _pause; return; }
+		;;
+	3)
+		[[ -n "$RC_REMOTE" ]] || { _err "Configure primero la nube."; rm -f "$lst"; _pause; return; }
+		_rc_list | grep -E '^rl-.*\.tar\.enc$' | sort -r | head -n 40 >"$lst"
+		_pick "Respaldos en la nube (más nuevos primero):" "$lst" || { rm -f "$lst"; _pause; return; }
+		f="$LOCAL_DIR/restore/$_PICKED"
+		_rc_get "$_PICKED" "$f" || { _err "Falló la descarga."; rm -f "$lst" "$f"; _pause; return; }
+		;;
+	4)
+		_ask f "Ruta completa del archivo" ""
+		;;
+	*) rm -f "$lst"; return ;;
+	esac
+	rm -f "$lst"
+	[[ -s "$f" ]] || { _err "Archivo no encontrado o vacío: $f"; _pause; return; }
+
+	pf="$(mktemp)"
+	if [[ -s "$PASSF" ]] && _yes "¿Usar la contraseña guardada en este servidor?" s; then
+		cp -f "$PASSF" "$pf"
+	else
+		echo -ne "\033[1;32mContraseña del respaldo: \033[1;37m"
+		read -rs pw; echo
+		printf '%s\n' "$pw" >"$pf"
+	fi
+	work="$(mktemp -d /var/tmp/rlrest.XXXXXX)"
+	if ! _ossl_dec "$f" "$work/pack.tar" "$pf"; then
+		_err "No se pudo descifrar: contraseña incorrecta o archivo dañado."
+		rm -rf "$work" "$pf"; _pause; return
+	fi
+	rm -f "$pf"
+	tar -C "$work" -xf "$work/pack.tar" 2>/dev/null
+	echo ""
+	_ok "Respaldo descifrado correctamente."
+	echo -e "\033[1;33mContenido (MANIFEST):\033[0m"
+	head -n 12 "$work/MANIFEST.txt" 2>/dev/null
+	echo ""
+	echo -e "\033[1;31m[\033[1;36m1\033[1;31m] \033[1;37m• \033[1;33mUsuarios SSH, contraseñas, revendedores y bot (backup.vps)"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m] \033[1;37m• \033[1;33mConfiguración extra (nodos/WireGuard, HCR, Xray, certificados, sshd)"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m] \033[1;37m• \033[1;33mTodo"
+	echo -e "\033[1;31m[\033[1;36m0\033[1;31m] \033[1;37m• \033[1;33mCancelar"
+	echo -ne "\033[1;32mQué restaurar: \033[1;37m"
+	read -r o
+	[[ "$o" =~ ^[123]$ ]] || { rm -rf "$work"; return; }
+	_err "Esto SOBREESCRIBE archivos del sistema (usuarios, shadow, configuraciones)."
+	echo -ne "\033[1;32mEscriba RESTAURAR para continuar: \033[1;37m"
+	read -r pw
+	[[ "$pw" = "RESTAURAR" ]] || { _warn "Cancelado."; rm -rf "$work"; _pause; return; }
+
+	if [[ "$o" = 1 || "$o" = 3 ]]; then
+		if [[ -s "$work/backup.vps" ]]; then
+			cp -f "$work/backup.vps" /backup.vps
+			( cd / && tar -xf backup.vps )
+			rm -f /backup.vps
+			[[ -x /bin/vence-migrar ]] && /bin/vence-migrar --quiet 2>/dev/null
+			mkdir -p /etc/RedLibre/senha /etc/RedLibre/vence /etc/RedLibre/revendedores 2>/dev/null
+			[[ -f /etc/sudoers.d/redlibre-revendedores ]] && chmod 440 /etc/sudoers.d/redlibre-revendedores
+			if [[ -x /bin/gestor-revendedores ]] && grep -q -- '--after-restore' /bin/gestor-revendedores 2>/dev/null; then
+				/bin/gestor-revendedores --after-restore >/dev/null 2>&1
+			else
+				[[ -x /bin/revendedor-sshd-lock ]] && /bin/revendedor-sshd-lock >/dev/null 2>&1
+				[[ -x /bin/revendedor-caducidad-apply ]] && /bin/revendedor-caducidad-apply >/dev/null 2>&1
+			fi
+			_ok "Usuarios, revendedores y bot restaurados."
+		else
+			_err "El respaldo no trae backup.vps."
+		fi
+	fi
+	if [[ "$o" = 2 || "$o" = 3 ]]; then
+		if [[ -s "$work/extras.tar.gz" ]]; then
+			tar -C / -xzf "$work/extras.tar.gz" 2>/dev/null
+			command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
+			cp -f "$work/crontab.txt" /root/crontab.restaurado.txt 2>/dev/null
+			_ok "Configuración extra restaurada."
+			_warn "Crontab guardado en /root/crontab.restaurado.txt (no se aplicó solo; revíselo)."
+			if [[ -f /etc/RedLibre/nodos/enabled && -x /bin/gestor-nodos-salida ]]; then
+				_warn "Reaplicando nodos de salida..."
+				/bin/gestor-nodos-salida apply >/dev/null 2>&1
+			fi
+			if [[ -f /etc/RedLibre/hcr.conf && -x /opt/hcr-server/install.sh ]]; then
+				_warn "HCR: abra el menú 32 → opción 2 para reaplicar el servicio."
+			fi
+			_warn "sshd/Xray: reinicie los servicios (menú 23) si cambió su configuración."
+		else
+			_err "El respaldo no trae configuración extra."
+		fi
+	fi
+	rm -rf "$work"
+	_pause
+}
+
+# --- reseña ------------------------------------------------------------------
+_guia() {
+	clear; _line
+	echo -e "\E[44;1;37m        Reseña: backup externo diario        \E[0m"; _line
+	cat <<'EOF'
+QUÉ HACE
+  Todos los días crea un respaldo (usuarios, revendedores, bot, nodos/WireGuard,
+  HCR, Xray, certificados, sshd), lo CIFRA con AES-256 y lo sube a los destinos
+  que active. Si un destino falla, avisa por Telegram.
+
+PASOS (en este orden)
+  2) Contraseña de cifrado. Guárdela además en un gestor de contraseñas.
+  3) VPS por SSH: otro servidor (mejor otro proveedor). Crea una clave exclusiva.
+  4) Nube con rclone: Cloudflare R2 / Backblaze B2 / Wasabi / Google Drive.
+        R2: Cloudflare → R2 → crear bucket y "API token" (S3). En rclone config:
+            tipo s3, proveedor Cloudflare, endpoint https://<cuenta>.r2.cloudflarestorage.com
+        B2: crear bucket y "Application Key"; tipo b2.
+        Ideal: clave de aplicación sin permiso de borrado (si hackean el servidor,
+        no pueden destruir los respaldos). Con eso, la retención no podrá borrar
+        los viejos desde acá: use la regla de ciclo de vida del bucket.
+  5) Telegram: usa el bot del menú 25 (detecta token y chat solo).
+  6) Programar: hora diaria y cuántos respaldos conservar.
+  8) Probar destinos y 7) Respaldar ahora. Luego verifique con 9) una restauración.
+
+RETENCIÓN
+  Se conservan N diarios + 1 por semana durante M semanas. Los respaldos de cada
+  servidor llevan el nombre rl-<host>-<fecha>-<hora>.tar.enc y solo se borran
+  los de ese mismo host.
+
+RESTAURAR EN UN SERVIDOR NUEVO
+  1. Instale el panel RedLibre.   2. Menú 15 → 3.
+  3. Configure el MISMO destino de antes (opción 3 o 4) para poder leerlo.
+  4. Opción 9 (Restaurar): elija el origen (VPS/nube), escriba la contraseña
+     del respaldo y elija qué restaurar. Los nodos se reaplican solos;
+     HCR: menú 32 → 2.
+     (Alternativa: copie el .tar.enc al servidor y use el origen 4.)
+
+LIMITACIÓN
+  Si el servidor se cae por completo, no puede avisar que "no llegó" el respaldo.
+  Revise de vez en cuando la fecha del último respaldo en el destino, o use un
+  monitor externo (por ejemplo un ping/heartbeat de healthchecks.io).
+
+ARCHIVOS
+  /etc/RedLibre/backup-externo.conf    configuración (solo root)
+  /etc/RedLibre/.backup-externo.pass   contraseña de cifrado (solo root)
+  /etc/RedLibre/.backup-externo.key    clave SSH del destino
+  /var/backups/redlibre/               copias locales y descargas de restauración
+  /var/log/redlibre-backup-externo.log registro
+  /etc/cron.d/redlibre-backup-externo  tarea diaria
+EOF
+	echo ""
+	_pause
+}
+
+_view_log() {
+	clear
+	[[ -f "$LOG" ]] && tail -n 60 "$LOG" || _warn "Aún no hay registro."
+	echo ""
+	_pause
+}
+
+# --- entrada -----------------------------------------------------------------
+case "${1:-}" in
+--run)
+	_run
+	exit $?
+	;;
+--status)
+	_show_status
+	exit 0
+	;;
+esac
+
+_need_pkg openssl openssl >/dev/null 2>&1
+mkdir -p "$LOCAL_DIR" 2>/dev/null; chmod 700 "$LOCAL_DIR" 2>/dev/null
+
+while true; do
+	clear
+	_load
+	_line
+	echo -e "\E[44;1;37m        BACKUP EXTERNO DIARIO (cifrado)        \E[0m"
+	_line
+	_show_status
+	_line
+	echo -e "\033[1;31m[\033[1;36m1\033[1;31m] \033[1;37m• \033[1;33mReseña de uso"
+	echo -e "\033[1;31m[\033[1;36m2\033[1;31m] \033[1;37m• \033[1;33mContraseña de cifrado"
+	echo -e "\033[1;31m[\033[1;36m3\033[1;31m] \033[1;37m• \033[1;33mDestino: otro VPS por SSH"
+	echo -e "\033[1;31m[\033[1;36m4\033[1;31m] \033[1;37m• \033[1;33mDestino: nube (rclone)"
+	echo -e "\033[1;31m[\033[1;36m5\033[1;31m] \033[1;37m• \033[1;33mDestino: Telegram"
+	echo -e "\033[1;31m[\033[1;36m6\033[1;31m] \033[1;37m• \033[1;33mProgramar diario / retención"
+	echo -e "\033[1;31m[\033[1;36m7\033[1;31m] \033[1;37m• \033[1;33mRespaldar AHORA"
+	echo -e "\033[1;31m[\033[1;36m8\033[1;31m] \033[1;37m• \033[1;33mProbar destinos"
+	echo -e "\033[1;31m[\033[1;36m9\033[1;31m] \033[1;37m• \033[1;33mRestaurar"
+	echo -e "\033[1;31m[\033[1;36m10\033[1;31m] \033[1;37m• \033[1;33mVer registro"
+	echo -e "\033[1;31m[\033[1;36m0\033[1;31m] \033[1;37m• \033[1;33mVolver"
+	echo ""
+	echo -ne "\033[1;32mOpción: \033[1;37m"
+	read -r op
+	case "$op" in
+	1) _guia ;;
+	2) _cfg_pass ;;
+	3) _cfg_ssh ;;
+	4) _cfg_rclone ;;
+	5) _cfg_tg ;;
+	6) _cfg_sched ;;
+	7)
+		if [[ ! -s "$PASSF" ]]; then _err "Primero configure la contraseña (opción 2)."; _pause; else _run_now; fi
+		;;
+	8) _test_dests ;;
+	9) _restore ;;
+	10) _view_log ;;
+	0 | 00) exit 0 ;;
+	*) _err "Opción no válida."; sleep 1 ;;
+	esac
+done
