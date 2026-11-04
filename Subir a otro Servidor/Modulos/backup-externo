@@ -260,18 +260,41 @@ _ssh_get() { _ssh_q "cat $SSH_DIR/$1" >"$2"; }
 _rc_env() {
 	[[ -z "${RCLONE_CONFIG:-}" && -f /root/.config/rclone/rclone.conf ]] && export RCLONE_CONFIG=/root/.config/rclone/rclone.conf
 }
+# Token R2 de "solo objetos" no puede HeadBucket/ListBuckets.
+_rclone() {
+	_rc_env
+	rclone "$@" --s3-no-check-bucket
+}
+_rc_remote_size() { # $1 = remoto:ruta/archivo
+	local s
+	s="$(_rclone lsjson "$1" 2>/dev/null | grep -o '"Size": *[0-9]*' | head -n1 | tr -dc '0-9')"
+	[[ -n "$s" ]] && { printf '%s' "$s"; return 0; }
+	s="$(_rclone lsf --format s --files-only "$1" 2>/dev/null | head -n1 | tr -dc '0-9')"
+	printf '%s' "$s"
+}
 _rc_upload() {
 	local f="$1" b sz rsz
-	_rc_env
 	b="$(basename "$f")"
-	rclone copyto "$f" "$RC_REMOTE/$b" --retries 3 --low-level-retries 5 >>"$LOG" 2>&1 || return 1
+	if ! _rclone copyto "$f" "$RC_REMOTE/$b" --retries 3 --low-level-retries 5 >>"$LOG" 2>&1; then
+		_log "rclone copyto falló. Últimas líneas:"
+		tail -n 8 "$LOG" | while IFS= read -r l; do _log "  $l"; done
+		return 1
+	fi
 	sz="$(stat -c %s "$f")"
-	rsz="$(rclone lsf --format s "$RC_REMOTE/$b" 2>/dev/null | tr -dc '0-9')"
-	[[ "$sz" = "$rsz" ]]
+	rsz="$(_rc_remote_size "$RC_REMOTE/$b")"
+	if [[ -z "$rsz" ]]; then
+		_log "rclone: subido; no se pudo leer el tamaño remoto (se acepta el envío)"
+		return 0
+	fi
+	if [[ "$sz" != "$rsz" ]]; then
+		_log "rclone: tamaño distinto (local=$sz remoto=$rsz)"
+		return 1
+	fi
+	return 0
 }
-_rc_list() { _rc_env; rclone lsf "$RC_REMOTE" --files-only 2>/dev/null; }
-_rc_del() { _rc_env; rclone deletefile "$RC_REMOTE/$1" >>"$LOG" 2>&1; }
-_rc_get() { _rc_env; rclone copyto "$RC_REMOTE/$1" "$2" >>"$LOG" 2>&1; }
+_rc_list() { _rclone lsf "$RC_REMOTE" --files-only 2>/dev/null; }
+_rc_del() { _rclone deletefile "$RC_REMOTE/$1" >>"$LOG" 2>&1; }
+_rc_get() { _rclone copyto "$RC_REMOTE/$1" "$2" >>"$LOG" 2>&1; }
 
 # --- destino Telegram --------------------------------------------------------
 _tg_msg() {
@@ -521,13 +544,12 @@ _cfg_rclone() {
 	echo -e "\033[1;33mProbando...\033[0m"
 	# R2 con token de objetos no permite ListBuckets/CreateBucket.
 	# mkdir avisa y no hace nada; lsf del prefijo es la prueba real.
-	if rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1 \
-		|| rclone mkdir "$RC_REMOTE" >/dev/null 2>&1; then
+	if _rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1; then
 		_ok "Acceso a la nube: OK. Destino activado."
 		RC_ON=1
 	else
-		_err "No se pudo acceder a $RC_REMOTE. Revise 'rclone config' (token de objetos: no_check_bucket = true)."
-		rclone lsf "$RC_REMOTE" --max-depth 1 2>&1 | tail -n 5
+		_err "No se pudo acceder a $RC_REMOTE. Revise el nombre del bucket y rclone config."
+		_rclone lsf "$RC_REMOTE" --max-depth 1 2>&1 | tail -n 5
 		RC_ON=0
 	fi
 	_save
@@ -611,7 +633,7 @@ _test_dests() {
 	if [[ "$RC_ON" = 1 ]]; then
 		any=1
 		_rc_env
-		rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1 && _ok "Nube: OK" || _err "Nube: FALLA"
+		_rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1 && _ok "Nube: OK" || _err "Nube: FALLA"
 	fi
 	if [[ "$TG_ON" = 1 ]]; then
 		any=1
