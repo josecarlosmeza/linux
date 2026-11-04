@@ -123,12 +123,12 @@ _redlibre_restore_revendedores() {
 	fi
 }
 
-clear
 backbot=$1
 [[ "$backbot" = "botfile" ]] && {
 	_redlibre_create_backup /root/backup.vps bot
 	exit
 }
+clear
 [[ -z $backbot ]] && {
 	IP=$(wget -qO- ipv4.icanhazip.com)
 	apchon () {

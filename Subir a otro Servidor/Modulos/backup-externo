@@ -111,21 +111,65 @@ _ossl_dec() { # entrada salida passfile  → prueba pbkdf2 y luego modo antiguo
 	return 1
 }
 
+# --- paquete de usuarios (no depende de userbackup) --------------------------
+_pack_users() { # $1 = archivo destino
+	local dest="$1" stage items="" p
+	stage=$(mktemp -d /var/tmp/rlusers.XXXXXX) || return 1
+	mkdir -p "$stage/root" "$stage/etc/RedLibre" "$stage/etc/sudoers.d" "$stage/etc/ssh/sshd_config.d"
+	[[ -f /root/usuarios.db ]] && cp -a /root/usuarios.db "$stage/root/usuarios.db"
+	for p in /etc/shadow /etc/passwd /etc/group /etc/gshadow; do
+		[[ -e "$p" ]] && cp -a "$p" "$stage$p"
+	done
+	[[ -d /etc/RedLibre/senha ]] && cp -a /etc/RedLibre/senha "$stage/etc/RedLibre/senha"
+	[[ -d /etc/RedLibre/vence ]] && cp -a /etc/RedLibre/vence "$stage/etc/RedLibre/vence"
+	[[ -d /etc/RedLibre/revendedores ]] && cp -a /etc/RedLibre/revendedores "$stage/etc/RedLibre/revendedores"
+	[[ -f /etc/sudoers.d/redlibre-revendedores ]] && cp -a /etc/sudoers.d/redlibre-revendedores "$stage/etc/sudoers.d/"
+	[[ -f /etc/ssh/sshd_config.d/50-redlibre-revendedores.conf ]] && cp -a /etc/ssh/sshd_config.d/50-redlibre-revendedores.conf "$stage/etc/ssh/sshd_config.d/"
+	[[ -d /etc/bot ]] && cp -a /etc/bot "$stage/etc/bot"
+	[[ -e "$stage/root/usuarios.db" ]] && items+=" root/usuarios.db"
+	[[ -e "$stage/etc/shadow" ]] && items+=" etc/shadow"
+	[[ -e "$stage/etc/passwd" ]] && items+=" etc/passwd"
+	[[ -e "$stage/etc/group" ]] && items+=" etc/group"
+	[[ -e "$stage/etc/gshadow" ]] && items+=" etc/gshadow"
+	[[ -d "$stage/etc/RedLibre/senha" ]] && items+=" etc/RedLibre/senha"
+	[[ -d "$stage/etc/RedLibre/vence" ]] && items+=" etc/RedLibre/vence"
+	[[ -d "$stage/etc/RedLibre/revendedores" ]] && items+=" etc/RedLibre/revendedores"
+	[[ -e "$stage/etc/sudoers.d/redlibre-revendedores" ]] && items+=" etc/sudoers.d/redlibre-revendedores"
+	[[ -e "$stage/etc/ssh/sshd_config.d/50-redlibre-revendedores.conf" ]] && items+=" etc/ssh/sshd_config.d/50-redlibre-revendedores.conf"
+	[[ -d "$stage/etc/bot" ]] && items+=" etc/bot"
+	rm -f "$dest"
+	# shellcheck disable=SC2086
+	tar -C "$stage" -cf "$dest" $items
+	local rc=$?
+	rm -rf "$stage"
+	[[ $rc -eq 0 && -s "$dest" ]]
+}
+
 # --- construcción del respaldo -----------------------------------------------
 _build() { # $1 = archivo .enc final
-	local out="$1" st plain p
+	local out="$1" st plain p ub_err
 	local -a rel=()
 	umask 077
 	mkdir -p "$LOCAL_DIR"; chmod 700 "$LOCAL_DIR"
 	st="$(mktemp -d /var/tmp/rlbk.XXXXXX)" || return 1
 	rm -f /root/backup.vps
+	ub_err="$st/userbackup.err"
 	if [[ -x /bin/userbackup ]]; then
-		TERM=dumb /bin/userbackup botfile </dev/null >/dev/null 2>&1
+		TERM=dumb /bin/userbackup botfile </dev/null >"$ub_err" 2>&1 || true
+	fi
+	# El autobackup del bot a veces mueve el archivo a /etc/RedLibre/backups/
+	if [[ ! -s /root/backup.vps && -s /etc/RedLibre/backups/backup.vps ]]; then
+		cp -f /etc/RedLibre/backups/backup.vps /root/backup.vps
+		_log "userbackup dejó el archivo en /etc/RedLibre/backups/; se reutiliza."
 	fi
 	if [[ ! -s /root/backup.vps ]]; then
-		_log "ERROR: userbackup no generó /root/backup.vps"
-		rm -rf "$st"
-		return 1
+		_log "userbackup no generó backup.vps; se arma aquí."
+		[[ -s "$ub_err" ]] && _log "salida userbackup: $(tr '\n' ' ' <"$ub_err" | head -c 300)"
+		if ! _pack_users /root/backup.vps; then
+			_log "ERROR: no se pudo armar el paquete de usuarios."
+			rm -rf "$st"
+			return 1
+		fi
 	fi
 	mv -f /root/backup.vps "$st/backup.vps"
 
@@ -475,11 +519,15 @@ _cfg_rclone() {
 		_err "Formato inválido."; RC_ON=0; _save; _pause; return
 	fi
 	echo -e "\033[1;33mProbando...\033[0m"
-	if rclone mkdir "$RC_REMOTE" >/dev/null 2>&1 && rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1; then
+	# R2 con token de objetos no permite ListBuckets/CreateBucket.
+	# mkdir avisa y no hace nada; lsf del prefijo es la prueba real.
+	if rclone lsf "$RC_REMOTE" --max-depth 1 >/dev/null 2>&1 \
+		|| rclone mkdir "$RC_REMOTE" >/dev/null 2>&1; then
 		_ok "Acceso a la nube: OK. Destino activado."
 		RC_ON=1
 	else
-		_err "No se pudo acceder a $RC_REMOTE. Revise 'rclone config'. Destino NO activado."
+		_err "No se pudo acceder a $RC_REMOTE. Revise 'rclone config' (token de objetos: no_check_bucket = true)."
+		rclone lsf "$RC_REMOTE" --max-depth 1 2>&1 | tail -n 5
 		RC_ON=0
 	fi
 	_save
