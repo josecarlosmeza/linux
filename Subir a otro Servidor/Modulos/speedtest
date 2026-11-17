@@ -14,18 +14,23 @@ _pause() {
 }
 
 # Evitar llamarnos a nosotros mismos (/bin/speedtest es este script).
+# Ookla primero: speedtest-cli (Python) recibe 403 de speedtest.net.
 _find_engine() {
 	local p
-	for p in /usr/bin/speedtest-cli /usr/local/bin/speedtest-cli; do
-		[[ -x "$p" ]] && { printf '%s|cli\n' "$p"; return 0; }
-	done
-	for p in /usr/bin/speedtest /usr/local/bin/speedtest /usr/sbin/speedtest; do
+	for p in /usr/local/bin/speedtest /usr/bin/speedtest /usr/sbin/speedtest; do
 		[[ -x "$p" ]] || continue
 		[[ "$(readlink -f "$p" 2>/dev/null || echo "$p")" == "$(readlink -f "$0" 2>/dev/null || echo "$0")" ]] && continue
 		if "$p" --version 2>&1 | grep -qi ookla; then
 			printf '%s|ookla\n' "$p"
 			return 0
 		fi
+	done
+	for p in /usr/bin/speedtest-cli /usr/local/bin/speedtest-cli; do
+		[[ -x "$p" ]] && { printf '%s|cli\n' "$p"; return 0; }
+	done
+	for p in /usr/bin/speedtest /usr/local/bin/speedtest /usr/sbin/speedtest; do
+		[[ -x "$p" ]] || continue
+		[[ "$(readlink -f "$p" 2>/dev/null || echo "$p")" == "$(readlink -f "$0" 2>/dev/null || echo "$0")" ]] && continue
 		if "$p" --help 2>&1 | grep -q -- '--json'; then
 			printf '%s|cli\n' "$p"
 			return 0
@@ -40,8 +45,38 @@ _find_engine() {
 	return 1
 }
 
+_install_ookla() {
+	local arch tgz url tmp
+	arch=$(uname -m)
+	case "$arch" in
+		x86_64) tgz="ookla-speedtest-1.2.0-linux-x86_64.tgz" ;;
+		aarch64) tgz="ookla-speedtest-1.2.0-linux-aarch64.tgz" ;;
+		*) return 1 ;;
+	esac
+	url="https://install.speedtest.net/app/cli/$tgz"
+	tmp=$(mktemp -d /var/tmp/ookla-st.XXXXXX) || return 1
+	if ! curl -fsSL --retry 3 -o "$tmp/st.tgz" "$url"; then
+		rm -rf "$tmp"
+		return 1
+	fi
+	tar -xzf "$tmp/st.tgz" -C "$tmp" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+	if [[ ! -f "$tmp/speedtest" ]]; then
+		rm -rf "$tmp"
+		return 1
+	fi
+	install -m 0755 "$tmp/speedtest" /usr/local/bin/speedtest
+	rm -rf "$tmp"
+	[[ -x /usr/local/bin/speedtest ]] && /usr/local/bin/speedtest --version 2>&1 | grep -qi ookla
+}
+
 _try_install() {
-	echo -e "\033[1;33mNo hay cliente de Speedtest. Intentando instalar speedtest-cli...\033[0m"
+	echo -e "\033[1;33mInstalando el cliente oficial Ookla Speedtest...\033[0m"
+	if _install_ookla; then
+		echo -e "\033[1;32mOokla Speedtest instalado en /usr/local/bin/speedtest\033[0m"
+		_find_engine >/dev/null
+		return 0
+	fi
+	echo -e "\033[1;33mNo se pudo bajar el binario oficial. Intentando paquete del sistema...\033[0m"
 	if command -v dnf >/dev/null 2>&1; then
 		dnf install -y speedtest-cli >/dev/null 2>&1
 	elif command -v yum >/dev/null 2>&1; then
@@ -218,8 +253,8 @@ fi
 if [[ -z "$_eng" ]]; then
 	echo -e "\033[1;31mNo se encontró un cliente de Speedtest.\033[0m"
 	echo -e "\033[1;37mInstale uno de estos:\033[0m"
-	echo "  dnf install -y speedtest-cli"
-	echo "  (o el cliente oficial Ookla: speedtest)"
+	echo "  curl -fsSL -o /tmp/st.tgz https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
+	echo "  tar -xzf /tmp/st.tgz -C /tmp && install -m 0755 /tmp/speedtest /usr/local/bin/speedtest"
 	_pause
 	exit 1
 fi
@@ -246,6 +281,26 @@ _spid=$!
 _spinner "$_spid"
 wait "$_spid"
 _rc=$?
+
+# speedtest-cli (Python) suele recibir 403 de Ookla: pasar al cliente oficial.
+if [[ "$_kind" != "ookla" ]] && grep -qiE '403|Forbidden|Cannot retrieve speedtest' "$_out" 2>/dev/null; then
+	echo -e "\033[1;33mEl cliente Python fue bloqueado (403). Cambiando al oficial Ookla...\033[0m"
+	if _install_ookla; then
+		_eng=$(_find_engine || true)
+		_bin="${_eng%%|*}"
+		_kind="${_eng##*|}"
+		: >"$_tmp"; : >"$_out"
+		echo -e "  \033[1;37mMotor:\033[0m \033[1;33m${_kind}\033[0m  \033[1;90m($_bin)\033[0m"
+		(
+			"$_bin" --accept-license --accept-gdpr --format=json --progress=no >"$_tmp" 2>"$_out" \
+				|| "$_bin" --accept-license --accept-gdpr -f json --progress=no >"$_tmp" 2>"$_out"
+		) &
+		_spid=$!
+		_spinner "$_spid"
+		wait "$_spid"
+		_rc=$?
+	fi
+fi
 
 PING=""; JITTER=""; DOWN=""; UP=""; ISP=""; SERVER=""; CITY=""; IP=""; URL=""
 _kv=""
