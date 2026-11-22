@@ -217,7 +217,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$bin
+ExecStart=/bin/bash $bin
 Restart=always
 RestartSec=2
 KillMode=process
@@ -237,11 +237,14 @@ _redlibre_rt_start() {
     bin=$(_redlibre_limiter_bin)
     [[ -x "$bin" ]] || return 1
     # Cortar restos de screen/procesos sueltos para no tener dos limiters.
-    command -v screen >/dev/null 2>&1 && screen -S limiter -X quit 2>/dev/null
+    command -v screen >/dev/null 2>&1 && screen -S limiter -X quit >/dev/null 2>&1
     pkill -x limiter 2>/dev/null || true
     sleep 1
     if command -v systemctl >/dev/null 2>&1; then
-        _redlibre_rt_start_systemd || true
+        if ! _redlibre_rt_start_systemd; then
+            echo -e "\033[1;31mNo arrancó redlibre-limiter.service:\033[0m"
+            systemctl status redlibre-limiter.service --no-pager -l 2>/dev/null | head -n 20
+        fi
     fi
     if ! _redlibre_rt_running && command -v screen >/dev/null 2>&1; then
         _redlibre_screen_prepare
@@ -271,6 +274,7 @@ _redlibre_install_pam_stack() {
     export GRACE_MAX_AGE_SEC="${GRACE_MAX_AGE_SEC:-300}"
     export GRACE_PROXY="${GRACE_PROXY:-1}"
     export GRACE_BUFFER="${GRACE_BUFFER:-0}"
+    mkdir -p /usr/local/bin /usr/bin /etc/systemd/system /etc/cron.d
     if _redlibre_is_rhel_like; then
         tmp=$(mktemp) || return 1
         if ! wget -qO "$tmp" "${URL_BASE}/limitador-completo.sh"; then
@@ -302,7 +306,9 @@ _redlibre_verify() {
     echo -e "\E[44;1;37m     Verificación de limitadores      \E[0m"
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo ""
-    echo -e "\033[1;33m# 1) Proceso screen /bin/limiter\033[0m"
+    echo -e "\033[1;33m# 1) Proceso /bin/limiter (systemd MainPID; hijos extra son normales)\033[0m"
+    echo -e "\033[1;37m\$ systemctl show redlibre-limiter.service -p MainPID --value\033[0m"
+    systemctl show redlibre-limiter.service -p MainPID --value 2>/dev/null || echo "(sin unidad)"
     echo -e "\033[1;37m\$ pgrep -ax limiter\033[0m"
     if pgrep -ax limiter 2>/dev/null; then
         echo -e "\033[1;32m→ ACTIVO\033[0m"
@@ -347,8 +353,11 @@ _redlibre_verify() {
     echo -e "\033[1;33m# 8) Últimas denegaciones PAM\033[0m"
     echo -e "\033[1;37m\$ journalctl -t ssh_limiter -n 12 --no-pager\033[0m"
     journalctl -t ssh_limiter -n 12 --no-pager 2>/dev/null || echo "(sin entradas o sin journalctl)"
+    if journalctl -t ssh_limiter -n 20 --no-pager 2>/dev/null | grep -q 'no readable'; then
+        echo -e "\033[1;31m→ PAM está dejando pasar: no puede leer la DB. Reaplique opción 2 (seteuid + /etc/RedLibre).\033[0m"
+    fi
     echo ""
-    echo -e "\033[1;33m# 9) Últimos cortes del screen limiter\033[0m"
+    echo -e "\033[1;33m# 9) Últimos cortes del limiter (tiempo real)\033[0m"
     echo -e "\033[1;37m\$ tail -n 12 /var/log/session_kill.log\033[0m"
     if [[ -f /var/log/session_kill.log ]]; then
         tail -n 12 /var/log/session_kill.log

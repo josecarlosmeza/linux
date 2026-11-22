@@ -15,7 +15,8 @@ echo ""
 # /root: coincide con tu instalación (usuarios.db, usuarios-limitador.db en ~)
 LIMITADOR_DIR="/root"
 DB_MASTER="$LIMITADOR_DIR/usuarios.db"
-DB_LIMITER="$LIMITADOR_DIR/usuarios-limitador.db"
+# PAM no puede leer /root (700). La copia para PAM vive en /etc/RedLibre (644).
+DB_LIMITER="/etc/RedLibre/usuarios-limitador.db"
 DB_BACKUP="$LIMITADOR_DIR/usuarios.backup"
 
 LIMITER_PATH="/usr/bin/check_ssh_limits.sh"
@@ -32,6 +33,9 @@ GHOST_CLEANUP_PATH="/usr/local/bin/sshd-ghost-cleanup.sh"
 SVC_PATH="/etc/systemd/system/db-guardian.service"
 PAM_SSHD_FILE="/etc/pam.d/sshd"
 CRON_GHOST="/etc/cron.d/sshd-ghost-cleanup"
+
+mkdir -p /usr/local/bin /usr/bin /etc/systemd/system /etc/cron.d /etc/RedLibre
+chmod 755 /etc/RedLibre 2>/dev/null || true
 
 # --- 1. DIRECTORIO Y BASE DE DATOS MAESTRA ---
 echo "--- 1. Configurando $LIMITADOR_DIR y base de datos de usuarios ---"
@@ -53,6 +57,7 @@ chmod 644 "$DB_MASTER"
 touch "$DB_LIMITER" "$DB_BACKUP"
 cp "$DB_MASTER" "$DB_LIMITER" 2>/dev/null || true
 chmod 644 "$DB_LIMITER"
+command -v restorecon >/dev/null && restorecon -v "$DB_LIMITER" 2>/dev/null || true
 
 # --- 2. CREAR SCRIPT DEL GUARDIÁN ---
 echo "--- 2. Creando Guardián de DB en $SCR_PATH ---"
@@ -238,12 +243,22 @@ fi
 sed -i '/pam_exec\.so.*check_ssh_limits\.sh/d' "$PAM_SSHD_FILE"
 # Insertar antes de "account include password-auth" (estructura AlmaLinux/RHEL)
 # expose_authtok no soportado para account; usar pam_exec.so sin él
-sed -i "/^account[[:space:]]*include[[:space:]]*password-auth/i account    required     pam_exec.so $LIMITER_PATH" "$PAM_SSHD_FILE"
+sed -i "/^account[[:space:]]*include[[:space:]]*password-auth/i account    required     pam_exec.so seteuid $LIMITER_PATH" "$PAM_SSHD_FILE"
+if ! grep -qE 'pam_exec\.so.*check_ssh_limits\.sh' "$PAM_SSHD_FILE"; then
+    sed -i "/^account[[:space:]]*include[[:space:]]*system-auth/i account    required     pam_exec.so seteuid $LIMITER_PATH" "$PAM_SSHD_FILE"
+fi
+if ! grep -qE 'pam_exec\.so.*check_ssh_limits\.sh' "$PAM_SSHD_FILE"; then
+    printf '\naccount    required     pam_exec.so seteuid %s\n' "$LIMITER_PATH" >>"$PAM_SSHD_FILE"
+fi
 echo "✅ PAM configurado."
 
 # --- 7. REINICIAR OPENSSH (AlmaLinux usa sshd) ---
 echo "--- 7. Reiniciando OpenSSH ---"
-if systemctl is-active --quiet sshd 2>/dev/null; then
+if ! sshd -t >/tmp/sshd-t.err 2>&1; then
+    echo "⚠️  sshd -t falló; NO se reinicia sshd (evita cortar SSH)."
+    cat /tmp/sshd-t.err 2>/dev/null
+    echo "    Corrija /etc/ssh/sshd_config y: restorecon -v /etc/ssh/sshd_config && systemctl restart sshd"
+elif systemctl is-active --quiet sshd 2>/dev/null || systemctl is-enabled --quiet sshd 2>/dev/null; then
     systemctl restart sshd
     echo "✅ sshd reiniciado."
 elif systemctl is-active --quiet ssh 2>/dev/null; then
@@ -252,6 +267,7 @@ elif systemctl is-active --quiet ssh 2>/dev/null; then
 else
     echo "⚠️  No se encontró sshd ni ssh. Reinicia el servicio SSH manualmente."
 fi
+rm -f /tmp/sshd-t.err
 echo ""
 echo "--- Instalación completada ---"
 echo ""

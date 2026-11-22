@@ -25,6 +25,8 @@ SVC_PATH="/etc/systemd/system/db-guardian.service"
 PAM_SSHD_FILE="/etc/pam.d/sshd"
 CRON_GHOST="/etc/cron.d/sshd-ghost-cleanup"
 
+mkdir -p /usr/local/bin /usr/bin /etc/systemd/system /etc/cron.d
+
 # --- 1. DIRECTORIO Y BASE DE DATOS MAESTRA ---
 echo "--- 1. Configurando $LIMITADOR_DIR y base de datos de usuarios ---"
 # /root existe; si usas otro dir, créalo antes
