@@ -74,7 +74,9 @@ fi
 [[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
 [[ $(grep -cw "$usuario" "$DB_FILE" 2>/dev/null) == "1" ]] && lim=$(grep -w "$usuario" "$DB_FILE" | cut -d' ' -f2) || lim="1"
 [[ -e "/etc/RedLibre/senha/$usuario" ]] && senha=$(cat "/etc/RedLibre/senha/$usuario") || senha="—"
-conexiones=$(ps -u "$usuario" 2>/dev/null | grep -c sshd || true)
+# pid + tiempo de vida (sshd / sshd-session / dropbear)
+_ses_lines=$(ps -u "$usuario" -o pid=,comm=,etime= 2>/dev/null | awk '$2=="sshd"||$2=="sshd-session"||$2=="dropbear"{print $1,$3}')
+conexiones=$(printf '%s\n' "$_ses_lines" | grep -c '[0-9]' || true)
 _vraw=""
 declare -F redlibre_vence_get >/dev/null 2>&1 && _vraw=$(redlibre_vence_get "$usuario" 2>/dev/null) || true
 if [[ -n "$_vraw" ]]; then
@@ -90,6 +92,14 @@ echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━�
 echo -e "\033[1;32m  Límite conexiones (BD): \033[1;37m$lim\033[0m"
 echo -e "\033[1;32m  Contraseña (panel):     \033[1;37m$senha\033[0m"
 echo -e "\033[1;32m  Sesiones SSH activas:   \033[1;37m$conexiones\033[0m"
+if [[ "$conexiones" -gt 0 ]]; then
+    _n=0
+    while read -r _pid _et; do
+        [[ -z "$_pid" ]] && continue
+        _n=$((_n + 1))
+        echo -e "\033[1;32m    Sesión $_n:             \033[1;37m${_et:-—}\033[1;90m  (PID $_pid)\033[0m"
+    done <<<"$_ses_lines"
+fi
 if [[ -z "$expire_raw" || "$expire_raw" == "never" ]]; then
     echo -e "\033[1;32m  Vencimiento:            \033[1;33mSin fecha (nunca)\033[0m"
     echo -e "\033[1;32m  Estado:                 \033[1;32mVÁLIDO\033[0m"

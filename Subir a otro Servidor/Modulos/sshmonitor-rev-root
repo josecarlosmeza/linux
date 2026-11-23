@@ -47,34 +47,32 @@ while IFS= read -r user_orig; do
     limit="${limit//[[:space:]]/}"
     [[ -z "$limit" || ! "$limit" =~ ^[0-9]+$ ]] && limit=1
 
-    session_count=$(ps -u "$user" 2>/dev/null | grep -c sshd || true)
+    _ses_lines=$(ps -u "$user" -o pid=,comm=,etime= 2>/dev/null | awk '$2=="sshd"||$2=="sshd-session"||$2=="dropbear"{print $1,$3}')
+    session_count=$(printf '%s\n' "$_ses_lines" | grep -c '[0-9]' || true)
     session_count="${session_count//[^0-9]/}"
     [[ -z "$session_count" ]] && session_count=0
 
     if [[ "$session_count" -eq 0 ]]; then
         status=$(echo -e "\033[1;31mOffline \033[1;33m       ")
-        timerr="00:00:00"
+        echo -ne "\033[1;33m"
+        printf '%-17s%-14s%-10s%s\n' " $user" "$status" "0/$limit" "00:00:00"
     else
         TOTAL_SESSIONS=$((TOTAL_SESSIONS + session_count))
-        oldest_pid=""
-        while read -r _pid _com; do
-            [[ "$_com" == *sshd* ]] || continue
-            [[ -n "$_pid" ]] || continue
-            if [[ -z "$oldest_pid" ]] || [[ "$_pid" -lt "$oldest_pid" ]]; then
-                oldest_pid="$_pid"
-            fi
-        done < <(ps -u "$user" -o pid= -o comm= 2>/dev/null)
-
-        timerr="00:00:00"
-        if [[ -n "$oldest_pid" ]]; then
-            timerr=$(ps -o etime= -p "$oldest_pid" 2>/dev/null | tr -d '[:space:]')
-        fi
-        [[ -z "$timerr" ]] && timerr="00:00:00"
         status=$(echo -e "\033[1;32mOnline\033[1;33m         ")
+        _n=0
+        _first=1
+        while read -r _pid _et; do
+            [[ -z "$_pid" ]] && continue
+            _n=$((_n + 1))
+            echo -ne "\033[1;33m"
+            if [[ "$_first" -eq 1 ]]; then
+                printf '%-17s%-14s%-10s%s\n' " $user" "$status" "$session_count/$limit" "#$_n  ${_et:-—}"
+                _first=0
+            else
+                printf '%-17s%-14s%-10s%s\n' "" "" "" "#$_n  ${_et:-—}"
+            fi
+        done <<<"$_ses_lines"
     fi
-
-    echo -ne "\033[1;33m"
-    printf '%-17s%-14s%-10s%s\n' " $user" "$status" "$session_count/$limit" "$timerr"
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
 done < <(redlibre_rev_list_owned)
 
