@@ -156,6 +156,24 @@ if [[ -n "$_ses_rest" ]]; then
 fi
 [[ "$_max_ses_eff" -lt 1 ]] && _max_ses_eff=1
 
+_rev_min_left=""
+if declare -F redlibre_rev_minutos_restantes_cuenta >/dev/null 2>&1; then
+    _rev_min_left=$(redlibre_rev_minutos_restantes_cuenta)
+fi
+if [[ -n "$_rev_min_left" ]]; then
+    _rev_min_left="${_rev_min_left//[^0-9]/}"
+    [[ -z "$_rev_min_left" ]] && _rev_min_left=0
+    if [[ "$_rev_min_left" -lt 1 ]]; then
+        echo -e "\n\033[41;1;37m Su cuenta revendedor está vencida o vence hoy. No puede crear usuarios de prueba. \033[0m\n"
+        echo -ne "\033[1;33mPulse [ENTER] para volver al menú...\033[0m"
+        if [[ -r /dev/tty ]]; then read -r < /dev/tty; else read -r; fi
+        exit 1
+    fi
+    if [[ "$_max_min" -gt "$_rev_min_left" ]]; then
+        _max_min="$_rev_min_left"
+    fi
+fi
+
 error_exit() {
     echo ""
     tput setaf 7

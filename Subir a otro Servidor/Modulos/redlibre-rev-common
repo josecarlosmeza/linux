@@ -280,3 +280,97 @@ redlibre_rev_valid_prefixed_ssh_login() {
     [[ "$u" =~ ^[a-z][a-z0-9_]+$ ]] || return 1
     return 0
 }
+
+# Tope fijo: un cliente SSH creado por revendedor no dura más de 90 días.
+redlibre_rev_dias_max_fijo_cliente() {
+    echo 90
+}
+
+# Último YYYY-MM-DD de vencimiento permitido para un cliente:
+# min(hoy+90, FECHA_FIN_REVENDEDOR). Vacío + return 1 si la cuenta ya venció (hoy >= fecha fin).
+redlibre_rev_ymd_tope_cliente() {
+    local fijo ff today
+    today=$(date +%Y-%m-%d)
+    fijo=$(date "+%Y-%m-%d" -d "+90 days" 2>/dev/null || date "+%Y-%m-%d" --date="+90 days" 2>/dev/null) || fijo=""
+    [[ -n "$fijo" ]] || return 1
+    ff=$(redlibre_rev_conf_get "FECHA_FIN_REVENDEDOR" "")
+    ff="${ff//$'\r'/}"
+    ff="${ff//[[:space:]]/}"
+    if [[ "$ff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        if [[ "$today" > "$ff" || "$today" == "$ff" ]]; then
+            return 1
+        fi
+        if [[ "$ff" < "$fijo" ]]; then
+            printf '%s' "$ff"
+            return 0
+        fi
+    fi
+    printf '%s' "$fijo"
+    return 0
+}
+
+# Días máximos que el revendedor puede asignar ahora (0 = no puede crear/extender).
+redlibre_rev_max_dias_cliente() {
+    local today tope ts_tope ts_hoy d
+    today=$(date +%Y-%m-%d)
+    tope=$(redlibre_rev_ymd_tope_cliente) || { echo 0; return 0; }
+    ts_tope=$(date +%s -d "$tope" 2>/dev/null || date +%s --date="$tope" 2>/dev/null) || { echo 0; return 0; }
+    ts_hoy=$(date +%s -d "$today" 2>/dev/null || date +%s --date="$today" 2>/dev/null) || { echo 0; return 0; }
+    d=$(( (ts_tope - ts_hoy) / 86400 ))
+    [[ "$d" -lt 0 ]] && d=0
+    echo "$d"
+}
+
+# Ajusta días pedidos al tope. stdout = días. return 1 si el tope es 0.
+redlibre_rev_clamp_dias_cliente() {
+    local want="$1" max
+    want="${want//[^0-9]/}"
+    [[ -z "$want" || "$want" -lt 1 ]] && want=1
+    max=$(redlibre_rev_max_dias_cliente)
+    max="${max//[^0-9]/}"
+    [[ -z "$max" ]] && max=0
+    if [[ "$max" -lt 1 ]]; then
+        echo 0
+        return 1
+    fi
+    if [[ "$want" -gt "$max" ]]; then
+        echo "$max"
+    else
+        echo "$want"
+    fi
+    return 0
+}
+
+# Ajusta YYYY-MM-DD al tope. Rechaza hoy o fechas pasadas.
+redlibre_rev_clamp_ymd_cliente() {
+    local ymd="$1" tope today
+    [[ "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+    today=$(date +%Y-%m-%d)
+    if [[ "$ymd" < "$today" ]]; then
+        return 1
+    fi
+    tope=$(redlibre_rev_ymd_tope_cliente) || return 1
+    if [[ "$ymd" > "$tope" ]]; then
+        printf '%s' "$tope"
+    else
+        printf '%s' "$ymd"
+    fi
+    return 0
+}
+
+# Minutos que quedan hasta el bloqueo de la cuenta revendedor (vacío = sin fecha de cierre).
+redlibre_rev_minutos_restantes_cuenta() {
+    local ff ts now m
+    ff=$(redlibre_rev_conf_get "FECHA_FIN_REVENDEDOR" "")
+    ff="${ff//$'\r'/}"
+    ff="${ff//[[:space:]]/}"
+    if [[ ! "$ff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        echo ""
+        return 0
+    fi
+    ts=$(date +%s -d "$ff" 2>/dev/null || date +%s --date="$ff" 2>/dev/null) || { echo 0; return 0; }
+    now=$(date +%s)
+    m=$(( (ts - now) / 60 ))
+    [[ "$m" -lt 0 ]] && m=0
+    echo "$m"
+}

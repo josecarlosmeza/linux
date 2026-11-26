@@ -1,50 +1,73 @@
 #!/bin/bash
 #====================================================
 # Aplica caducidad de cuentas revendedor: bloqueo de
-# login revendedor y de todos sus clientes VPN (UID>=1000).
+# login revendedor y de todos sus clientes VPN (UID>=1000),
+# incluidos usuarios de prueba. Corta sesiones activas.
 # Desbloquea si el admin amplía FECHA_FIN o la elimina.
+# No desbloquea clientes que ya vencieron por su propia fecha.
 # Invocado por el limitador (root). Idempotente.
 #====================================================
 [[ $EUID -eq 0 ]] || exit 0
 
+[[ -f /etc/RedLibre/redlibre-vence-common ]] && . /etc/RedLibre/redlibre-vence-common
+
 today=$(date +%Y-%m-%d)
 
+_redlibre_cliente_individualmente_vencido() {
+    local u="$1"
+    if declare -F redlibre_vence_is_expired >/dev/null 2>&1; then
+        redlibre_vence_is_expired "$u" && return 0
+    fi
+    return 1
+}
+
+_redlibre_lock_user() {
+    local u="$1"
+    [[ -n "$u" ]] || return 0
+    id "$u" &>/dev/null || return 0
+    passwd -l "$u" 2>/dev/null || true
+    usermod -L "$u" 2>/dev/null || true
+    pkill -u "$u" 2>/dev/null || true
+    pkill -KILL -u "$u" 2>/dev/null || true
+}
+
+_redlibre_unlock_user() {
+    local u="$1"
+    [[ -n "$u" ]] || return 0
+    id "$u" &>/dev/null || return 0
+    _redlibre_cliente_individualmente_vencido "$u" && return 0
+    passwd -u "$u" 2>/dev/null || true
+    usermod -U "$u" 2>/dev/null || true
+}
+
 _redlibre_unlock_rev() {
-    local revlogin="$1" revdir="$2"
-    passwd -u "$revlogin" 2>/dev/null || true
-    usermod -U "$revlogin" 2>/dev/null || true
+    local revlogin="$1" revdir="$2" u _uid
+    _redlibre_unlock_user "$revlogin"
     shopt -s nullglob
     for f in "$revdir/usuarios"/*; do
         [[ -f "$f" ]] || continue
-        local u
         u=$(basename "$f")
         id "$u" &>/dev/null || continue
-        local _uid
         _uid=$(id -u "$u" 2>/dev/null)
         [[ "$_uid" -ge 1000 ]] || continue
-        passwd -u "$u" 2>/dev/null || true
-        usermod -U "$u" 2>/dev/null || true
+        _redlibre_unlock_user "$u"
     done
     shopt -u nullglob
 }
 
 _redlibre_lock_rev() {
-    local revlogin="$1" revdir="$2"
-    passwd -l "$revlogin" 2>/dev/null || true
-    usermod -L "$revlogin" 2>/dev/null || true
+    local revlogin="$1" revdir="$2" u _uid
     shopt -s nullglob
     for f in "$revdir/usuarios"/*; do
         [[ -f "$f" ]] || continue
-        local u
         u=$(basename "$f")
         id "$u" &>/dev/null || continue
-        local _uid
         _uid=$(id -u "$u" 2>/dev/null)
         [[ "$_uid" -ge 1000 ]] || continue
-        passwd -l "$u" 2>/dev/null || true
-        usermod -L "$u" 2>/dev/null || true
+        _redlibre_lock_user "$u"
     done
     shopt -u nullglob
+    _redlibre_lock_user "$revlogin"
 }
 
 shopt -s nullglob
@@ -65,7 +88,8 @@ for revdir in /etc/RedLibre/revendedores/*; do
         continue
     fi
 
-    if [[ "$today" > "$ff" ]]; then
+    # El día de FECHA_FIN ya está vencido (mismo criterio que chage -E).
+    if [[ "$today" > "$ff" || "$today" == "$ff" ]]; then
         _redlibre_lock_rev "$revlogin" "$revdir"
         : >"$stamp"
     else
