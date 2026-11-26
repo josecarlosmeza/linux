@@ -145,7 +145,7 @@ case "$_m" in
         echo -ne "\033[1;32mMáx. sesiones SSH en total (todos sus clientes; \033[1;33m0\033[1;32m = sin tope):\033[1;37m "
         read -r max_t
         [[ "${max_t//[^0-9]/}" = "" ]] && max_t=0
-        echo -e "\033[1;37mLos clientes SSH que cree no pueden superar \033[1;33m90 días\033[1;37m ni el cierre de esta cuenta.\033[0m"
+        echo -e "\033[1;37mLos clientes SSH que cree no pueden superar \033[1;33m90 días\033[1;37m (sí pueden superar el cierre de esta cuenta).\033[0m"
         echo -ne "\033[1;32mDías de vigencia de la cuenta revendedor (\033[1;33m0\033[1;32m = sin cierre; al vencer se bloquea el revendedor y todos sus clientes, incl. prueba):\033[1;37m "
         read -r rev_dias
         rev_dias="${rev_dias//[^0-9]/}"
@@ -391,7 +391,7 @@ case "$_m" in
         fi
         echo ""
         echo -e "\033[1;37mVigencia cuenta revendedor (al vencer se bloquean el revendedor y todos sus clientes, incl. prueba; al reactivar se desbloquean).\033[0m"
-        echo -e "\033[1;37mClientes SSH: máx. 90 días, sin superar esta fecha.\033[0m"
+        echo -e "\033[1;37mClientes SSH: máx. 90 días (pueden superar esta fecha de cierre).\033[0m"
         echo -e "\033[1;32m  Fecha fin vigente: \033[1;37m${_fe:-sin límite}\033[0m"
         echo -ne "\033[1;32m  Nuevos días desde hoy (\033[1;33m0\033[1;32m=sin límite, enter=mantener):\033[1;37m "
         read -r rfe

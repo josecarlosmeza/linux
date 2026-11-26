@@ -300,18 +300,16 @@ _import_rev() {
         fi
         _ymd=$(date -d "$_cut" '+%Y-%m-%d' 2>/dev/null || date --date="$_cut" '+%Y-%m-%d' 2>/dev/null)
         [[ -z "$_ymd" ]] && _ymd=$(date -d "+30 days" '+%Y-%m-%d')
-        if declare -F redlibre_rev_ymd_tope_cliente >/dev/null 2>&1; then
-            _tope=$(redlibre_rev_ymd_tope_cliente) || _tope=""
-            if [[ -z "$_tope" ]]; then
-                echo -e "\033[1;31mCuenta revendedor vencida: no se restaura $u.\033[0m"
+        if declare -F redlibre_rev_validar_ymd_cliente >/dev/null 2>&1; then
+            if ! redlibre_rev_validar_ymd_cliente "$_ymd"; then
+                echo -e "\033[1;31m$u: vencimiento fuera de tope (máx. 90 días). Omitido, no se recorta.\033[0m"
                 continue
             fi
-            if [[ "$_ymd" > "$_tope" ]]; then
-                _hora=$(date -d "$_cut" '+%H:%M:%S' 2>/dev/null || date --date="$_cut" '+%H:%M:%S' 2>/dev/null)
-                [[ -z "$_hora" ]] && _hora="00:00:00"
-                _cut="$_tope $_hora"
-                _ymd="$_tope"
-                echo -e "\033[1;33m$u: vencimiento recortado a $_ymd (tope 90 días / cierre de cuenta).\033[0m"
+        elif declare -F redlibre_rev_ymd_tope_cliente >/dev/null 2>&1; then
+            _tope=$(redlibre_rev_ymd_tope_cliente) || _tope=""
+            if [[ -n "$_tope" && "$_ymd" > "$_tope" ]]; then
+                echo -e "\033[1;31m$u: vencimiento fuera de tope (máx. 90 días). Omitido, no se recorta.\033[0m"
+                continue
             fi
         fi
 

@@ -72,7 +72,7 @@ while true; do
         _ff="${_ff//[[:space:]]/}"
         if [[ -n "$_ff" ]]; then
             _tday=$(date +%Y-%m-%d)
-            if [[ "$_tday" > "$_ff" || "$_tday" == "$_ff" ]]; then
+            if [[ "$_tday" > "$_ff" ]]; then
                 echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
                 echo -e "\033[1;31m Cuenta revendedor vencida (\033[1;37m$_ff\033[1;31m).\033[0m"
                 echo -e "\033[1;31m El acceso y sus usuarios SSH (incl. prueba) están bloqueados. Contacte al administrador.\033[0m"
@@ -90,7 +90,7 @@ while true; do
             echo -e "\033[1;36m Vigencia cuenta revendedor: \033[1;32msin fecha de cierre\033[0m"
         fi
     fi
-    echo -e "\033[1;36m Clientes SSH: máx. \033[1;33m90 días\033[1;36m, sin superar el cierre de esta cuenta.\033[0m"
+    echo -e "\033[1;36m Clientes SSH: máx. \033[1;33m90 días\033[1;36m (pueden superar el cierre de esta cuenta).\033[0m"
     echo -e "\033[1;36m Sesión SSH limitada al panel (sin shell ni comandos remotos).\033[0m"
     echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo ""

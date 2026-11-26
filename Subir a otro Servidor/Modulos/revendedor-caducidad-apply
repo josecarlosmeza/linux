@@ -88,8 +88,8 @@ for revdir in /etc/RedLibre/revendedores/*; do
         continue
     fi
 
-    # El día de FECHA_FIN ya está vencido (mismo criterio que chage -E).
-    if [[ "$today" > "$ff" || "$today" == "$ff" ]]; then
+    # El día de FECHA_FIN el revendedor aún puede operar; el bloqueo empieza al día siguiente.
+    if [[ "$today" > "$ff" ]]; then
         _redlibre_lock_rev "$revlogin" "$revdir"
         : >"$stamp"
     else
